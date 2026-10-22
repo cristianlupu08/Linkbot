@@ -1070,7 +1070,12 @@ async function handleCallback(query: TgCallbackQuery) {
   // "Skip" during the first-time setup.
   if (data === "ob:skip") {
     await answerCallback(query.id);
-    await editMessage(ctx.chatId, message.message_id, `${message.text ?? ""}\n\n(skipped, you can add it later in /settings)`);
+    // Cosmetic only: mark the question as skipped. Never let it block the setup.
+    await editMessage(
+      ctx.chatId,
+      message.message_id,
+      `${message.text ?? ""}\n\n(skipped, you can add it later in /settings)`,
+    ).catch(() => {});
     if (ctx.session.step === "awaiting_headline") await askOnboardingPhoto(ctx);
     else await finishOnboarding(ctx);
     return;
