@@ -56,7 +56,9 @@ export type SessionData = {
   audioFileName?: string;
   audioDuration?: number;
   // What to redo when the user taps [Try again].
-  retry?: "transcribe" | "generate";
+  retry?: "transcribe" | "generate" | "finish";
+  // The post text after a hook was picked, waiting for the finishing step.
+  chosenText?: string;
   // A long text we asked about: "make it a post or just chatting?"
   pendingText?: string;
 };
@@ -109,6 +111,15 @@ export async function addChatMessages(telegramId: number, turns: ChatTurn[]) {
 
 export type Variant = { label: string; text: string };
 
+// Everything generated after the variants, kept for the final message and later steps.
+export type PostMeta = {
+  hooks?: string[];
+  imagePrompt?: string;
+  slides?: { title: string; body?: string }[];
+  score?: number;
+  tips?: string[];
+};
+
 export type Post = {
   id: string;
   telegram_id: number;
@@ -117,6 +128,7 @@ export type Post = {
   transcript: string | null;
   options: Partial<PostOptions>;
   variants: Variant[] | null;
+  meta: PostMeta;
   final_text: string | null;
   cost_usd: number;
 };

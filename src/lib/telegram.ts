@@ -6,6 +6,7 @@ import { config } from "./config";
 export type TgUser = {
   id: number;
   first_name: string;
+  last_name?: string;
   username?: string;
 };
 
@@ -94,8 +95,48 @@ export async function editMessage(
   }
 }
 
-export function answerCallback(callbackId: string, text?: string) {
-  return callApi("answerCallbackQuery", { callback_query_id: callbackId, text });
+// Uploads a file (photo or document) with multipart/form-data.
+async function callApiWithFile<T>(
+  method: string,
+  field: "photo" | "document",
+  file: Uint8Array,
+  fileName: string,
+  fields: Record<string, unknown>,
+): Promise<T> {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    form.append(key, typeof value === "string" ? value : JSON.stringify(value));
+  }
+  form.append(field, new Blob([new Uint8Array(file)]), fileName);
+  const res = await fetch(`https://api.telegram.org/bot${config.botToken}/${method}`, {
+    method: "POST",
+    body: form,
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram ${method} failed: ${data.description}`);
+  return data.result as T;
+}
+
+// Captions are limited to 1024 characters.
+export function sendPhoto(chatId: number, png: Uint8Array, caption?: string, replyMarkup?: ReplyMarkup) {
+  return callApiWithFile<TgMessage>("sendPhoto", "photo", png, "image.png", {
+    chat_id: String(chatId),
+    caption: caption?.slice(0, 1024),
+    reply_markup: replyMarkup,
+  });
+}
+
+export function sendDocument(chatId: number, file: Uint8Array, fileName: string, caption?: string) {
+  return callApiWithFile<TgMessage>("sendDocument", "document", file, fileName, {
+    chat_id: String(chatId),
+    caption: caption?.slice(0, 1024),
+  });
+}
+
+// Only stops the button's loading spinner, so a failure (e.g. a tap older than 15 minutes) is harmless.
+export async function answerCallback(callbackId: string, text?: string) {
+  await callApi("answerCallbackQuery", { callback_query_id: callbackId, text }).catch(() => {});
 }
 
 export function sendTyping(chatId: number) {

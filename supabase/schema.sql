@@ -43,11 +43,14 @@ create table if not exists posts (
   transcript text,
   options jsonb not null default '{}'::jsonb,
   variants jsonb,
+  meta jsonb not null default '{}'::jsonb, -- hooks, image prompt, slides, score
   final_text text,
   cost_usd numeric(10, 5) not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- Added in stage 3 (for databases created before it).
+alter table posts add column if not exists meta jsonb not null default '{}'::jsonb;
 create index if not exists posts_user_idx on posts (telegram_id, created_at desc);
 
 alter table users enable row level security;
