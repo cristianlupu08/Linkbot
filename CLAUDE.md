@@ -18,7 +18,8 @@ Un bot de Telegram. Utilizatorul îi trimite un **mesaj vocal** cu o poveste, ia
 
 **Reguli fixe:**
 - Botul **NU postează niciodată singur** pe LinkedIn. Doar pregătește materialul.
-- Botul răspunde **doar utilizatorilor aprobați** (ID-uri de Telegram: al meu și al fratelui meu). Restul primesc „Acces restricționat”.
+- Botul răspunde **doar utilizatorilor aprobați**. Restul primesc „Access restricted.” La început, aprobat sunt doar eu (ID-ul meu în `ALLOWED_TELEGRAM_IDS`).
+- **Link de invitație:** la final vreau să-i trimit fratelui meu un link (`t.me/<bot>?start=<cod-secret>`). Când îl deschide, e aprobat automat și salvat în Supabase, fără să-i adaug ID-ul de mână. De făcut după ce intră Supabase.
 
 ## Conversația, pas cu pas
 
