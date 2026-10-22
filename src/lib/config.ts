@@ -27,8 +27,9 @@ export const config = {
   get inviteCode() {
     return process.env.INVITE_CODE ?? "";
   },
+  // Accepts the URL with or without the "/rest/v1/" suffix Supabase sometimes shows.
   get supabaseUrl() {
-    return required("SUPABASE_URL");
+    return required("SUPABASE_URL").replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "");
   },
   get supabaseSecretKey() {
     return required("SUPABASE_SECRET_KEY");
