@@ -496,3 +496,115 @@ export async function renderBanner(tagline: string, style: CarouselStyle, profil
   });
   return Buffer.from(await image.arrayBuffer());
 }
+
+// ---------- Feed preview: how the post will look on LinkedIn (mobile) ----------
+
+const FEED_WIDTH = 1080;
+const FEED_PAD = 40;
+const FEED_FONT = 32;
+// Roughly how many characters fit on one line of post text at this size, to cut where LinkedIn does.
+const CHARS_PER_LINE = 56;
+const VISIBLE_LINES = 3;
+
+// The text LinkedIn shows before "…more": about 3 lines on mobile, counting blank lines.
+export function feedVisibleText(text: string): { lines: string[]; truncated: boolean } {
+  const out: string[] = [];
+  let rows = 0;
+  for (const paragraph of text.split("\n")) {
+    const need = Math.max(1, Math.ceil(paragraph.length / CHARS_PER_LINE));
+    if (rows + need <= VISIBLE_LINES) {
+      out.push(paragraph);
+      rows += need;
+      continue;
+    }
+    const room = (VISIBLE_LINES - rows) * CHARS_PER_LINE - 8;
+    if (room > 10) {
+      const cut = paragraph.slice(0, room);
+      out.push(cut.slice(0, Math.max(cut.lastIndexOf(" "), 1)));
+    }
+    return { lines: out, truncated: true };
+  }
+  return { lines: out, truncated: false };
+}
+
+export type FeedMedia = { src: string; width: number; height: number; documentTitle?: string; pages?: number };
+
+function FeedPreviewView({ profile, text, media }: { profile: Profile; text: string; media?: FeedMedia }) {
+  const { lines, truncated } = feedVisibleText(text);
+  const gray = "#666666";
+  const avatarSize = 100;
+  const mediaHeight = media ? Math.round((FEED_WIDTH * media.height) / media.width) : 0;
+  return (
+    <div style={{ width: FEED_WIDTH, height: "100%", display: "flex", flexDirection: "column", backgroundColor: "#FFFFFF", fontFamily: "Inter", color: "#191919" }}>
+      {/* Author */}
+      <div style={{ display: "flex", alignItems: "center", padding: `${FEED_PAD}px ${FEED_PAD}px 24px`, gap: 22 }}>
+        {profile.photo ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={profile.photo} width={avatarSize} height={avatarSize} alt="" style={{ borderRadius: avatarSize / 2, objectFit: "cover" }} />
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: avatarSize, height: avatarSize, borderRadius: avatarSize / 2, backgroundColor: "#D9D9D9", fontSize: 38, fontWeight: 600, color: "#555" }}>
+            {initialsOf(profile.name)}
+          </div>
+        )}
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", fontSize: 32, fontWeight: 600 }}>{profile.name}</div>
+          {profile.headline ? <div style={{ display: "flex", fontSize: 26, color: gray, marginTop: 2 }}>{profile.headline}</div> : null}
+          <div style={{ display: "flex", fontSize: 24, color: gray, marginTop: 2 }}>Now</div>
+        </div>
+      </div>
+
+      {/* Text, cut where LinkedIn cuts it */}
+      <div style={{ display: "flex", flexDirection: "column", padding: `0 ${FEED_PAD}px 28px`, fontSize: FEED_FONT, lineHeight: 1.4 }}>
+        {lines.map((line, i) => {
+          const last = i === lines.length - 1;
+          if (!line.trim()) return <div key={i} style={{ display: "flex", height: FEED_FONT * 1.4 }} />;
+          return (
+            <div key={i} style={{ display: "flex", flexWrap: "wrap" }}>
+              {line.split(" ").map((word, j) => (
+                <span key={j} style={{ marginRight: 9 }}>
+                  {word}
+                </span>
+              ))}
+              {last && truncated ? <span style={{ color: gray }}>…more</span> : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Visual */}
+      {media ? (
+        <div style={{ display: "flex", position: "relative", width: FEED_WIDTH, height: mediaHeight }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={media.src} width={FEED_WIDTH} height={mediaHeight} alt="" style={{ objectFit: "cover" }} />
+          {media.documentTitle ? (
+            <div style={{ position: "absolute", top: 0, left: 0, width: FEED_WIDTH, display: "flex", padding: "18px 28px", backgroundColor: "rgba(0,0,0,0.6)", color: "#FFFFFF", fontSize: 26 }}>
+              {`${media.documentTitle.slice(0, 60)} · ${media.pages ?? 1} pages`}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Actions */}
+      <div style={{ display: "flex", justifyContent: "space-around", borderTop: "2px solid #E8E8E8", margin: `${media ? 0 : 8}px ${FEED_PAD}px 0`, padding: "26px 0 30px", fontSize: 26, fontWeight: 600, color: gray }}>
+        <div style={{ display: "flex" }}>Like</div>
+        <div style={{ display: "flex" }}>Comment</div>
+        <div style={{ display: "flex" }}>Repost</div>
+        <div style={{ display: "flex" }}>Send</div>
+      </div>
+    </div>
+  );
+}
+
+export async function renderFeedPreview(profile: Profile, text: string, media?: FeedMedia): Promise<Buffer> {
+  const { lines } = feedVisibleText(text);
+  const textRows = lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
+  const mediaHeight = media ? Math.round((FEED_WIDTH * media.height) / media.width) : 0;
+  // Header, text rows, visual and the action bar; any rounding slack stays white.
+  const height = FEED_PAD + 100 + 24 + textRows * Math.round(FEED_FONT * 1.4) + 28 + mediaHeight + 100;
+  const image = new ImageResponse(<FeedPreviewView profile={profile} text={text} media={media} />, {
+    width: FEED_WIDTH,
+    height,
+    fonts: await loadFonts(),
+  });
+  return Buffer.from(await image.arrayBuffer());
+}

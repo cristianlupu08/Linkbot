@@ -12,7 +12,15 @@ import {
   polishPost,
   suggestTaglines,
 } from "./ai";
-import { buildCarousel, renderBanner, renderQuoteCard, type CarouselStyle, type Profile } from "./carousel";
+import {
+  buildCarousel,
+  renderBanner,
+  renderFeedPreview,
+  renderQuoteCard,
+  type CarouselStyle,
+  type FeedMedia,
+  type Profile,
+} from "./carousel";
 import { config } from "./config";
 import {
   addChatMessages,
@@ -844,6 +852,7 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
       isAdjustment ? "Updated version below." : "Your post is ready.",
     );
     // The post and the comment go alone in their own messages so they're easy to copy.
+    await sendFeedPreview(ctx, post, text, visual, hook);
     await sendMessage(ctx.chatId, text);
     await sendMessage(ctx.chatId, statsText(text, review.score, review.question));
     await sendMessage(ctx.chatId, review.firstComment);
@@ -1149,10 +1158,52 @@ async function proceedAfterVisual(ctx: Ctx, post: Post) {
   else await finish(ctx, post, text);
 }
 
+// Width and height of a PNG or JPEG, read from its header.
+function imageSize(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length > 24 && bytes.readUInt32BE(0) === 0x89504e47) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+  }
+  // JPEG: walk the segments to the frame header (SOF0-SOF3), which holds the size.
+  let i = 2;
+  while (i + 9 < bytes.length && bytes[i] === 0xff) {
+    const marker = bytes[i + 1];
+    const length = bytes.readUInt16BE(i + 2);
+    if (marker >= 0xc0 && marker <= 0xc3) return { height: bytes.readUInt16BE(i + 5), width: bytes.readUInt16BE(i + 7) };
+    i += 2 + length;
+  }
+  return null;
+}
+
+function toMedia(bytes: Buffer, extra: Partial<FeedMedia> = {}): FeedMedia | undefined {
+  const size = imageSize(bytes);
+  if (!size) return undefined;
+  const mime = bytes.readUInt32BE(0) === 0x89504e47 ? "image/png" : "image/jpeg";
+  return { src: `data:${mime};base64,${bytes.toString("base64")}`, ...size, ...extra };
+}
+
+// The visual as the feed shows it: the carousel's cover with its title bar, or the photo.
+async function feedMedia(post: Post, visual: Visual | null, hook: string): Promise<FeedMedia | undefined> {
+  if (visual?.kind === "carousel") return toMedia(visual.cover, { documentTitle: hook, pages: visual.slides.length });
+  if (visual?.kind === "quote" || visual?.kind === "image") return toMedia(visual.png);
+  const fileId = visual?.kind === "own" ? visual.fileId : post.meta.visual?.kind === "photo" ? post.meta.visual.fileId : null;
+  if (fileId) return toMedia(Buffer.from(await downloadFile(fileId)));
+  return undefined;
+}
+
+// A picture of the post as it will look in the LinkedIn feed on a phone. Nice to have: never blocks the post.
+async function sendFeedPreview(ctx: Ctx, post: Post, text: string, visual: Visual | null, hook: string) {
+  try {
+    const [profile, media] = await Promise.all([visualProfile(ctx), feedMedia(post, visual, hook)]);
+    const png = await renderFeedPreview(profile, text, media);
+    await sendPhoto(ctx.chatId, png, "Preview: how it looks in the LinkedIn feed (mobile).");
+  } catch (error) {
+    console.error("feed preview failed", error);
+  }
+}
+
 // Sends a finished visual and returns its Telegram file_id so /history and reminders can resend it for free.
 async function sendVisual(ctx: Ctx, post: Post, visual: Visual, hook: string): Promise<PostMeta["visual"]> {
   if (visual.kind === "carousel") {
-    await sendPhoto(ctx.chatId, visual.cover, "Cover preview. The full carousel is the PDF below.");
     const sent = await sendDocument(ctx.chatId, visual.pdf, "carousel.pdf", carouselCaption(hook));
     return sent.document ? { kind: "document", fileId: sent.document.file_id } : undefined;
   }
@@ -1179,6 +1230,7 @@ async function replaceVisual(ctx: Ctx, post: Post, text: string) {
     const visual = await withTyping(ctx.chatId, () => makeVisual(ctx, post, options, text, hook, false));
     await stopProgress();
     await editMessage(ctx.chatId, panelId, visual ? "New visual below." : "No visual for this post.");
+    await sendFeedPreview(ctx, { ...post, meta: { ...post.meta, visual: undefined } }, text, visual, hook);
     const saved = visual ? await sendVisual(ctx, post, visual, hook) : undefined;
     await updatePost(post.id, { meta: { ...post.meta, visual: saved } });
     if (visual) await addPostCost(post.id, visual.costUsd);
