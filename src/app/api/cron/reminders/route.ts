@@ -19,7 +19,7 @@ export async function GET(request: Request) {
       await sendSavedPost(
         post.telegram_id,
         post,
-        "Good morning ☀️ Your post is ready. The morning is a good time to publish it on LinkedIn:",
+        "Reminder: your post is ready to publish. Mornings tend to perform well on LinkedIn.",
       );
       await updatePost(post.id, { meta: { ...post.meta, remindedAt: new Date().toISOString() } });
       sent += 1;

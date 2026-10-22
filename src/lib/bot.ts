@@ -4,8 +4,10 @@ import {
   generateSlides,
   generateVariants,
   ideaQuestions,
+  learnStyle,
   revisePost,
-  reviewPost,
+  nextInterviewQuestion,
+  polishPost,
   suggestTaglines,
 } from "./ai";
 import { buildCarousel, renderBanner, renderQuoteCard, type CarouselStyle, type Profile } from "./carousel";
@@ -18,7 +20,10 @@ import {
   getRecentChat,
   getSession,
   getUser,
+  costSummary,
+  discardDrafts,
   listDonePosts,
+  listDraftPosts,
   markUpdateProcessed,
   saveSession,
   updatePost,
@@ -97,7 +102,9 @@ const ALL_SET = [
   "",
   "Send a voice note about something that happened at work: a decision, a mistake, a result. One to three minutes works best.",
   "",
-  "Need a starting point? Use /ideas. All commands are in the Menu.",
+  "Need a starting point? Use /ideas.",
+  "",
+  "All commands: tap ☰ Menu, next to the message field.",
 ].join("\n");
 
 const skipKeyboard: ReplyMarkup = { inline_keyboard: [[{ text: "Skip", callback_data: "ob:skip" }]] };
@@ -106,33 +113,40 @@ const FIRST_POST_TIPS = [
   "Also available:",
   "",
   "/ideas: prompts to find your next story",
+  "/style: match the writing style of your past posts",
   "/history: your recent posts, ready to resend",
   "/banner: a profile banner in your style",
   "/settings: photo, name and job title",
+  "",
+  "All commands are under ☰ Menu, next to the message field.",
 ].join("\n");
 
 const HELP = [
-  "How it works:",
+  "How it works",
   "",
-  "1. Send me a voice note with a story from work (or type /new and write it).",
-  "2. Check I heard it right.",
-  "3. Pick the tone and the visual: carousel, quote card or image. Next time I remember your choices.",
-  "4. Flip through 3 versions, pick one, then pick the first line.",
-  "5. You get the post, its score, a first comment and the visual. Want changes? Just tell me.",
+  "1. Send a voice note with a story from work, or use /new to type it.",
+  "2. Confirm the transcript and answer a few quick questions about the story.",
+  "3. Choose tone and visual (carousel, quote card or image). Your choices are remembered.",
+  "4. Pick one of 3 versions, then the opening line.",
+  "5. Receive the post, a score, a suggested first comment and the visual. Request edits in plain words.",
   "",
-  "/ideas: no story in mind? I'll ask you 3 questions.",
-  "/history: your last posts, ready to send again.",
-  "/banner: a LinkedIn profile banner in your style.",
-  "/settings: your photo, name and job title for the visuals.",
+  "Commands",
+  "/ideas: prompts to find a story",
+  "/style: match the writing style of your past posts",
+  "/drafts: resume unfinished posts",
+  "/history: resend recent posts",
+  "/banner: profile banner in your style",
+  "/costs: what your posts have cost",
+  "/settings: photo, name and job title",
   "",
-  "Tips for a good voice note: one story, a real moment (where you were, what happened), what was hard about it, and what you'd tell someone now. 1 to 3 minutes is perfect.",
+  "A good voice note covers one concrete moment: what happened, what was at stake, and what you took from it. One to three minutes works best.",
   "",
-  "I never post anything for you.",
+  "Nothing is ever posted on your behalf.",
 ].join("\n");
 
-const ERROR_TEXT = "Something didn't work on my side. Try again?";
+const ERROR_TEXT = "Something went wrong. Please try again.";
 const retryKeyboard: ReplyMarkup = {
-  inline_keyboard: [[{ text: "Try again 🔄", callback_data: "retry" }]],
+  inline_keyboard: [[{ text: "Try again", callback_data: "retry" }]],
 };
 
 function fullName(user: TgUser) {
@@ -207,7 +221,7 @@ async function handleMessage(message: TgMessage, user: TgUser) {
   if (/^\/new\b/.test(text)) {
     ctx.session = { step: "awaiting_story", data: {} };
     await saveSession(user.id, ctx.session);
-    await sendMessage(chatId, "Let's do it. Tell me the story: a voice note works best, but you can type it too.");
+    await sendMessage(chatId, "Send the story as a voice note, or type it out.");
     return;
   }
   if (/^\/help\b/.test(text)) {
@@ -232,8 +246,25 @@ async function handleMessage(message: TgMessage, user: TgUser) {
     await startBanner(ctx);
     return;
   }
+  if (/^\/style\b/.test(text)) {
+    await showStyle(ctx);
+    return;
+  }
+  if (/^\/drafts\b/.test(text)) {
+    await resetSession(ctx);
+    await showDrafts(ctx);
+    return;
+  }
+  if (/^\/costs\b/.test(text)) {
+    await showCosts(ctx);
+    return;
+  }
 
   const audio = message.voice ?? message.audio;
+  if (audio && ctx.session.step === "awaiting_followup") {
+    await answerFollowUpVoice(ctx, audio);
+    return;
+  }
   if (audio) {
     await startFromVoice(ctx, audio);
     return;
@@ -245,7 +276,7 @@ async function handleMessage(message: TgMessage, user: TgUser) {
   }
 
   if (!text) {
-    await sendMessage(chatId, "I can't open that one. Send me a voice note or type to me.");
+    await sendMessage(chatId, "This file type isn't supported. Send a voice note or text.");
     return;
   }
 
@@ -260,8 +291,14 @@ async function handleMessage(message: TgMessage, user: TgUser) {
     case "awaiting_banner":
       await makeBanner(ctx, text);
       return;
+    case "awaiting_style":
+      await addStyleSample(ctx, text);
+      return;
+    case "awaiting_followup":
+      await answerFollowUp(ctx, text);
+      return;
     case "adjusting":
-      await adjust(ctx, text);
+      await adjust(ctx, text, true);
       return;
     case "awaiting_story":
       await startFromText(ctx, text);
@@ -273,10 +310,10 @@ async function handleMessage(message: TgMessage, user: TgUser) {
   } else if (text.length >= STORY_LENGTH_HINT) {
     ctx.session.data.pendingText = text;
     await saveSession(user.id, ctx.session);
-    await sendMessage(chatId, "That sounds like a story. Want me to turn it into a post?", {
+    await sendMessage(chatId, "This reads like a story. Turn it into a post?", {
       inline_keyboard: [
         [
-          { text: "Yes, make it a post", callback_data: "mk" },
+          { text: "Create post", callback_data: "mk" },
           { text: "Just chatting", callback_data: "chat" },
         ],
       ],
@@ -322,7 +359,7 @@ async function showSettings(ctx: Ctx, messageId?: number) {
     "",
     `Name: ${profile.name ?? fullName(ctx.user)}`,
     `Job title: ${profile.headline ?? "not set (e.g. Software Engineer at Acme)"}`,
-    `Photo: ${profile.photoFileId ? "✓ set" : "not set"}`,
+    `Photo: ${profile.photoFileId ? "set" : "not set"}`,
   ].join("\n");
   const keyboard: ReplyMarkup = {
     inline_keyboard: [
@@ -332,7 +369,7 @@ async function showSettings(ctx: Ctx, messageId?: number) {
         { text: "✏️ Job title", callback_data: "set:headline" },
       ],
       [
-        { text: "🖼 Make my banner", callback_data: "set:banner" },
+        { text: "Profile banner", callback_data: "set:banner" },
         { text: "Done ✓", callback_data: "set:done" },
       ],
     ],
@@ -353,10 +390,10 @@ async function receivePhoto(ctx: Ctx, fileId: string) {
   }
   ctx.session.data.pendingPhotoId = fileId;
   await saveSession(ctx.user.id, ctx.session);
-  await sendMessage(ctx.chatId, "Nice photo. Want me to put it on your carousels and quote cards?", {
+  await sendMessage(ctx.chatId, "Use this photo on your carousels and quote cards?", {
     inline_keyboard: [
       [
-        { text: "Yes, use it ✓", callback_data: "ph:yes" },
+        { text: "Use photo", callback_data: "ph:yes" },
         { text: "No", callback_data: "ph:no" },
       ],
     ],
@@ -407,17 +444,17 @@ async function startFromVoice(ctx: Ctx, audio: TgAudioFile) {
   if (audio.duration > MAX_VOICE_SECONDS) {
     await sendMessage(
       ctx.chatId,
-      "That one's a bit long for me (5 minutes max). Could you tell it again, a little shorter?",
+      "Voice notes are limited to 5 minutes. Please send a shorter version.",
     );
     return;
   }
   if (audio.file_size && audio.file_size > MAX_FILE_BYTES) {
-    await sendMessage(ctx.chatId, "That file is too big for me to open (20 MB max). A shorter one?");
+    await sendMessage(ctx.chatId, "Files are limited to 20 MB. Please send a smaller one.");
     return;
   }
 
   const post = await createPost(ctx.user.id, { voice_file_id: audio.file_id });
-  const panel = await sendMessage(ctx.chatId, "Got it, listening… 🎧");
+  const panel = await sendMessage(ctx.chatId, "Transcribing…");
   ctx.session = {
     step: "idle",
     data: {
@@ -442,7 +479,7 @@ async function transcribe(ctx: Ctx, post: Post) {
       await editMessage(
         ctx.chatId,
         panelMessageId!,
-        "I couldn't hear anything in that one. Want to try another voice note?",
+        "No speech detected. Please send another voice note.",
       );
       return;
     }
@@ -459,10 +496,10 @@ async function transcribe(ctx: Ctx, post: Post) {
 
 async function startFromText(ctx: Ctx, text: string) {
   const post = await createPost(ctx.user.id, { transcript: text });
-  const panel = await sendMessage(ctx.chatId, "Got it ✍️");
+  const panel = await sendMessage(ctx.chatId, "Story received.");
   ctx.session = { step: "idle", data: { postId: post.id, panelMessageId: panel.message_id } };
   await saveSession(ctx.user.id, ctx.session);
-  await showOptionsStart(ctx, post);
+  await followUpOrContinue(ctx, post);
 }
 
 async function showTranscript(ctx: Ctx, transcript: string) {
@@ -470,12 +507,12 @@ async function showTranscript(ctx: Ctx, transcript: string) {
   await editMessage(
     ctx.chatId,
     ctx.session.data.panelMessageId!,
-    `Here's what I heard:\n\n"${shown}"\n\nDid I get it right?`,
+    `Transcript:\n\n"${shown}"\n\nIs this accurate?`,
     {
       inline_keyboard: [
         [
-          { text: "Looks right ✓", callback_data: "ok" },
-          { text: "Let me fix it ✏️", callback_data: "fix" },
+          { text: "Correct", callback_data: "ok" },
+          { text: "Edit", callback_data: "fix" },
         ],
       ],
     },
@@ -490,7 +527,7 @@ async function applyCorrection(ctx: Ctx, text: string) {
   }
   await updatePost(postId, { transcript: text });
   // Show the corrected version in a fresh panel at the bottom of the chat.
-  const panel = await sendMessage(ctx.chatId, "Updated ✓");
+  const panel = await sendMessage(ctx.chatId, "Transcript updated.");
   ctx.session = { step: "idle", data: { postId, panelMessageId: panel.message_id } };
   await saveSession(ctx.user.id, ctx.session);
   await showTranscript(ctx, text);
@@ -544,15 +581,16 @@ async function showSummary(ctx: Ctx, post: Post, fromLastTime = false) {
 async function generate(ctx: Ctx, post: Post) {
   const panelId = ctx.session.data.panelMessageId!;
   const options = postOptions(post);
+  const profile = await getProfile(ctx.user.id);
   const stopProgress = startProgress(ctx.chatId, panelId, [
-    "Writing 3 versions for you… ✍️",
-    "Still writing, choosing the best words… ✍️",
-    "Almost there… ✍️",
+    "Writing 3 versions…",
+    "Still writing…",
+    "Almost done…",
   ]);
 
   try {
     const { variants, hooks, quote, imagePrompt, costUsd } = await withTyping(ctx.chatId, () =>
-      generateVariants(post.transcript!, options, ctx.user.first_name),
+      generateVariants(post.transcript!, options, ctx.user.first_name, profile.styleGuide),
     );
     await stopProgress();
     const meta = { ...post.meta, hooks, quote, imagePrompt };
@@ -571,7 +609,7 @@ async function generate(ctx: Ctx, post: Post) {
       await editMessage(
         ctx.chatId,
         panelId,
-        "I couldn't write this one. Could you tell the story a bit differently?",
+        "This story couldn't be processed. Try rephrasing it.",
       );
       return;
     }
@@ -595,7 +633,7 @@ async function showVariant(ctx: Ctx, post: Post) {
           { text: `${index + 1}/${total}`, callback_data: "noop" },
           { text: "▶", callback_data: `v:${(index + 1) % total}` },
         ],
-        [{ text: "Pick this one ✓", callback_data: "pick" }],
+        [{ text: "Use this version", callback_data: "pick" }],
       ],
     },
   );
@@ -621,16 +659,16 @@ async function showHooks(ctx: Ctx, post: Post) {
     return;
   }
   const text = [
-    "Last choice: the first line. It's what people see before they tap “…see more”.",
+    "Choose the opening line. It's what readers see before “…see more”.",
     "",
-    `Yours now: "${firstLine(variant.text)}"`,
+    `Current: "${firstLine(variant.text)}"`,
     "",
     ...hooks.map((hook, i) => `${i + 1}. ${hook}`),
   ].join("\n");
   await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, text, {
     inline_keyboard: [
       hooks.map((_, i) => ({ text: String(i + 1), callback_data: `h:${i}` })),
-      [{ text: "Keep mine ✓", callback_data: "h:k" }],
+      [{ text: "Keep current", callback_data: "h:k" }],
     ],
   });
 }
@@ -644,41 +682,43 @@ function seeMorePreview(text: string) {
   return `${cut.slice(0, cut.lastIndexOf(" "))}… see more`;
 }
 
-function statsText(text: string, score: number, tips: string[]) {
+function statsText(text: string, score: number, detailQuestion: string) {
   const lines = [`${text.length.toLocaleString("en-US")} characters · Score ${score}/10`];
-  if (tips.length) lines.push("", "To make it even better:", ...tips.map((tip) => `• ${tip}`));
   const preview = seeMorePreview(text);
-  if (preview) lines.push("", "What people see before they tap:", `"${preview}"`);
+  if (preview) lines.push("", "Preview before “…see more”:", `"${preview}"`);
   if (/https?:\/\/|www\./i.test(text)) {
-    lines.push("", "⚠️ Move the link to the first comment. Posts with links get shown to fewer people.");
+    lines.push("", "Note: move the link to the first comment. Posts with links get less reach.");
   }
-  lines.push("", "💬 Your first comment is next. Post it right after publishing: early comments help the post travel.");
+  if (detailQuestion) {
+    lines.push("", `To make it stronger: ${detailQuestion} Reply with the answer and I'll work it in.`);
+  }
+  lines.push("", "Suggested first comment below. Post it right after publishing; early comments help reach.");
   return lines.join("\n");
 }
 
 const ADJUST_TEXT =
-  "Want to change anything? Tap below, or just tell me in your own words (e.g. “mention it was my first month”).";
+  "Need changes? Use the buttons, or describe the edit (e.g. “mention it was my first month”).";
 
 const adjustKeyboard: ReplyMarkup = {
   inline_keyboard: [
     [
-      { text: "✂️ Shorter", callback_data: "a:short" },
-      { text: "🔁 New ending", callback_data: "a:end" },
+      { text: "Shorter", callback_data: "a:short" },
+      { text: "New ending", callback_data: "a:end" },
     ],
     [
-      { text: "🪝 Other hook", callback_data: "a:hook" },
-      { text: "😶 Fewer emoji", callback_data: "a:emoji" },
+      { text: "Different hook", callback_data: "a:hook" },
+      { text: "Fewer emoji", callback_data: "a:emoji" },
     ],
-    [{ text: "⏰ Remind me tomorrow morning", callback_data: "a:remind" }],
-    [{ text: "All good, done ✓", callback_data: "a:done" }],
+    [{ text: "Remind me tomorrow morning", callback_data: "a:remind" }],
+    [{ text: "Done", callback_data: "a:done" }],
   ],
 };
 
 function carouselCaption(hook: string) {
-  return `On LinkedIn: start a post → + → Add a document → upload this PDF. Title idea: "${hook}"`;
+  return `To publish: start a post → + → Add a document → upload this PDF. Suggested title: "${hook}"`;
 }
-const QUOTE_CAPTION = "Your quote card. Add it to the post on LinkedIn as an image.";
-const IMAGE_CAPTION = "Your image. Add it to the post on LinkedIn.";
+const QUOTE_CAPTION = "Quote card. Attach it to the post as an image.";
+const IMAGE_CAPTION = "Image. Attach it to the post.";
 
 function largestPhoto(message: TgMessage): PostMeta["visual"] {
   const photo = message.photo?.[message.photo.length - 1];
@@ -695,7 +735,7 @@ export async function sendSavedPost(chatId: number, post: Post, intro: string) {
   await sendMessage(chatId, intro);
   await sendMessage(chatId, post.final_text ?? "");
   if (post.meta.firstComment) {
-    await sendMessage(chatId, "💬 First comment:");
+    await sendMessage(chatId, "First comment:");
     await sendMessage(chatId, post.meta.firstComment);
   }
   const visual = post.meta.visual;
@@ -712,12 +752,12 @@ type Visual =
 
 function progressSteps(options: PostOptions, isAdjustment: boolean) {
   if (isCarousel(options)) {
-    return ["Checking your post and writing the slides… ✍️", "Designing your slides… 🎨", "Building the PDF… 📄"];
+    return ["Reviewing the post and writing slides…", "Designing slides…", "Building the PDF…"];
   }
   if (options.visual === "Image" && !isAdjustment) {
-    return ["Painting your image… 🎨 (about 30 seconds)", "Still painting… 🎨", "Adding the last details… 🎨"];
+    return ["Generating the image (about 30 seconds)…", "Still generating…", "Finishing…"];
   }
-  return ["Checking your post… ✍️", "Almost there… ✍️"];
+  return ["Reviewing the post…", "Almost done…"];
 }
 
 async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) {
@@ -730,15 +770,17 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
   try {
     const hooks = post.meta.hooks ?? [];
     const hook = hooks.includes(firstLine(text)) ? firstLine(text) : (hooks[0] ?? firstLine(text));
+    // The editor pass cleans up filler before you see the post. After an edit you asked for,
+    // we keep your wording and only take the score and comment.
     const [review, visual] = await withTyping(ctx.chatId, () =>
-      Promise.all([reviewPost(text, post.transcript!), makeVisual(ctx, post, options, text, hook, isAdjustment)]),
+      Promise.all([polishPost(text, post.transcript!), makeVisual(ctx, post, options, text, hook, isAdjustment)]),
     );
     await stopProgress();
+    if (!isAdjustment) text = review.text;
 
     const meta = {
       ...post.meta,
       score: review.score,
-      tips: review.tips,
       firstComment: review.firstComment,
       ...(visual?.kind === "carousel" ? { slides: visual.slides } : {}),
     };
@@ -748,17 +790,17 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
     await editMessage(
       ctx.chatId,
       panelId,
-      isAdjustment ? "✓ Updated. Here's the new version 👇" : "✓ Done. Here's everything 👇",
+      isAdjustment ? "Updated version below." : "Your post is ready.",
     );
     // The post and the comment go alone in their own messages so they're easy to copy.
     await sendMessage(ctx.chatId, text);
-    await sendMessage(ctx.chatId, statsText(text, review.score, review.tips));
+    await sendMessage(ctx.chatId, statsText(text, review.score, review.question));
     await sendMessage(ctx.chatId, review.firstComment);
 
     // Keep Telegram's file_id of the visual so /history and reminders can resend it for free.
     let saved: PostMeta["visual"];
     if (visual?.kind === "carousel") {
-      await sendPhoto(ctx.chatId, visual.cover, "Carousel cover 👆 The full carousel is the PDF below.");
+      await sendPhoto(ctx.chatId, visual.cover, "Cover preview. The full carousel is the PDF below.");
       const sent = await sendDocument(ctx.chatId, visual.pdf, "carousel.pdf", carouselCaption(hook));
       if (sent.document) saved = { kind: "document", fileId: sent.document.file_id };
     } else if (visual?.kind === "quote") {
@@ -768,7 +810,7 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
       const sent = await sendPhoto(ctx.chatId, visual.png, IMAGE_CAPTION, anotherImageKeyboard(post.id));
       saved = largestPhoto(sent);
     } else if (isAdjustment && options.visual === "Image") {
-      await sendMessage(ctx.chatId, "Your image above stays the same.");
+      await sendMessage(ctx.chatId, "The image is unchanged.");
     }
     if (saved) await updatePost(post.id, { meta: { ...meta, visual: saved } });
 
@@ -776,7 +818,13 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
     const panel = await sendMessage(ctx.chatId, ADJUST_TEXT, adjustKeyboard);
     ctx.session = {
       step: "adjusting",
-      data: { postId: post.id, panelMessageId: panel.message_id, chosenText: text, hookTries: ctx.session.data.hookTries },
+      data: {
+        postId: post.id,
+        panelMessageId: panel.message_id,
+        chosenText: text,
+        hookTries: ctx.session.data.hookTries,
+        detailQuestion: review.question || undefined,
+      },
     };
     await saveSession(ctx.user.id, ctx.session);
 
@@ -828,7 +876,7 @@ async function makeVisual(
 }
 
 function anotherImageKeyboard(postId: string): ReplyMarkup {
-  return { inline_keyboard: [[{ text: "Another image 🔄", callback_data: `img:${postId}` }]] };
+  return { inline_keyboard: [[{ text: "Another image", callback_data: `img:${postId}` }]] };
 }
 
 async function anotherImage(ctx: Ctx, postId: string) {
@@ -838,10 +886,10 @@ async function anotherImage(ctx: Ctx, postId: string) {
   try {
     const { png, costUsd } = await withTyping(ctx.chatId, () => generateImage(post.meta.imagePrompt!));
     await addPostCost(post.id, costUsd);
-    await sendPhoto(ctx.chatId, png, "Here's another one.", anotherImageKeyboard(post.id));
+    await sendPhoto(ctx.chatId, png, "Alternative image.", anotherImageKeyboard(post.id));
   } catch (error) {
     console.error("another image failed", error);
-    await sendMessage(ctx.chatId, "Couldn't paint that one. Tap the button again in a moment?");
+    await sendMessage(ctx.chatId, "Image generation failed. Please try again.");
   }
 }
 
@@ -853,19 +901,30 @@ const ADJUST_INSTRUCTIONS: Record<string, string> = {
   emoji: "Remove most emoji. Keep at most one, only if it truly fits.",
 };
 
-async function adjust(ctx: Ctx, instruction: string) {
+async function adjust(ctx: Ctx, instruction: string, typedByUser = false) {
   const postId = ctx.session.data.postId;
   const current = ctx.session.data.chosenText;
-  const post = postId ? await getPost(postId) : null;
+  let post = postId ? await getPost(postId) : null;
   if (!post || !current) {
     await resetSession(ctx);
     await chat(ctx, instruction);
     return;
   }
-  await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, "On it… ✍️");
+  // A typed reply to "To make it stronger: …" is a new fact: add it to the story so the writer may use it.
+  const detailQuestion = ctx.session.data.detailQuestion;
+  if (typedByUser && detailQuestion) {
+    const transcript = `${post.transcript}\n\nQ: ${detailQuestion}\nA: ${instruction}`;
+    await updatePost(post.id, { transcript });
+    post = { ...post, transcript };
+    instruction = `Work in the author's answer to "${detailQuestion}": ${instruction}. Add it where it fits naturally and change nothing else.`;
+    ctx.session.data.detailQuestion = undefined;
+  }
+  const story = post.transcript!;
+  await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, "Revising…");
+  const { styleGuide } = await getProfile(ctx.user.id);
   try {
     const { text, costUsd } = await withTyping(ctx.chatId, () =>
-      revisePost(current, instruction, post.transcript!),
+      revisePost(current, instruction, story, styleGuide),
     );
     await addPostCost(post.id, costUsd);
     await finish(ctx, post, text, true);
@@ -902,18 +961,18 @@ async function showIdeas(ctx: Ctx, messageId?: number) {
       ideaQuestions(profile.headline, await recentTopics(ctx.user.id)),
     );
     const text = [
-      "Pick one and answer it with a voice note, like you'd tell a friend 🎙️",
+      "Pick one and answer it in a voice note.",
       "",
       ...questions.map((q, i) => `${i + 1}. ${q}`),
       "",
       "Your answer becomes the story for your post.",
     ].join("\n");
-    const keyboard: ReplyMarkup = { inline_keyboard: [[{ text: "Other questions 🔄", callback_data: "ideas" }]] };
+    const keyboard: ReplyMarkup = { inline_keyboard: [[{ text: "New questions", callback_data: "ideas" }]] };
     if (messageId) await editMessage(ctx.chatId, messageId, text, keyboard);
     else await sendMessage(ctx.chatId, text, keyboard);
   } catch (error) {
     console.error("ideas failed", error);
-    await sendMessage(ctx.chatId, "I couldn't come up with questions just now. Try /ideas again in a moment?");
+    await sendMessage(ctx.chatId, "Couldn't generate questions. Please try /ideas again.");
   }
 }
 
@@ -922,7 +981,7 @@ async function showIdeas(ctx: Ctx, messageId?: number) {
 async function showHistory(ctx: Ctx) {
   const posts = await listDonePosts(ctx.user.id, 5);
   if (posts.length === 0) {
-    await sendMessage(ctx.chatId, "No finished posts yet. Send me a voice note and let's make the first one 🎙️");
+    await sendMessage(ctx.chatId, "No finished posts yet.");
     return;
   }
   const lines = posts.map((post, i) => {
@@ -930,7 +989,7 @@ async function showHistory(ctx: Ctx) {
     const score = post.meta.score ? ` · ${post.meta.score}/10` : "";
     return `${i + 1}. ${firstLine(post.final_text ?? "").slice(0, 70)}\n    ${date}${score}`;
   });
-  await sendMessage(ctx.chatId, ["Your last posts. Tap a number to get it again:", "", ...lines].join("\n"), {
+  await sendMessage(ctx.chatId, ["Recent posts. Select one to resend:", "", ...lines].join("\n"), {
     inline_keyboard: [posts.map((post, i) => ({ text: String(i + 1), callback_data: `hi:${post.id}` }))],
   });
 }
@@ -939,10 +998,10 @@ async function showHistory(ctx: Ctx) {
 
 async function startBanner(ctx: Ctx, messageId?: number) {
   ctx.session = { step: "awaiting_banner", data: {} };
-  const intro = "Let's make your LinkedIn banner 🖼\n\nSend me the line it should say, or pick one of mine:";
+  const intro = "Profile banner (1584 × 396).\n\nSend the line it should say, or choose one:";
   const panel = messageId
-    ? (await editMessage(ctx.chatId, messageId, `${intro}\n\nThinking of a few… ✍️`), messageId)
-    : (await sendMessage(ctx.chatId, `${intro}\n\nThinking of a few… ✍️`)).message_id;
+    ? (await editMessage(ctx.chatId, messageId, `${intro}\n\nGenerating suggestions…`), messageId)
+    : (await sendMessage(ctx.chatId, `${intro}\n\nGenerating suggestions…`)).message_id;
   try {
     const profile = await getProfile(ctx.user.id);
     const taglines = await withTyping(ctx.chatId, async () =>
@@ -956,7 +1015,7 @@ async function startBanner(ctx: Ctx, messageId?: number) {
   } catch (error) {
     console.error("taglines failed", error);
     await saveSession(ctx.user.id, ctx.session);
-    await editMessage(ctx.chatId, panel, `${intro.split("\n\n")[0]}\n\nSend me the line it should say.`);
+    await editMessage(ctx.chatId, panel, `${intro.split("\n\n")[0]}\n\nSend the line it should say.`);
   }
 }
 
@@ -971,12 +1030,267 @@ async function makeBanner(ctx: Ctx, tagline: string) {
     await sendDocumentAlbum(
       ctx.chatId,
       pngs.map((png, i) => ({ bytes: png, fileName: `banner-${styles[i].toLowerCase()}.png` })),
-      "Your banner in 3 styles, full quality. On LinkedIn: your profile → the pencil on the banner → upload the one you like. Want different words? Send /banner again.",
+      "Your banner in 3 styles, full resolution. To upload: your LinkedIn profile → edit the background photo. For different text, send /banner again.",
     );
   } catch (error) {
     console.error("banner failed", error);
-    await sendMessage(ctx.chatId, "Couldn't make the banner just now. Try /banner again in a moment?");
+    await sendMessage(ctx.chatId, "Banner generation failed. Please try /banner again.");
   }
+}
+
+// ---------- Interview: up to 3 questions about the story before writing ----------
+
+const MAX_INTERVIEW_QUESTIONS = 3;
+
+const interviewKeyboard: ReplyMarkup = {
+  inline_keyboard: [
+    [
+      { text: "Skip question", callback_data: "fu:skip" },
+      { text: "Enough, continue", callback_data: "fu:done" },
+    ],
+  ],
+};
+
+// Each question is chosen from everything said so far, so nothing gets asked twice. Done once per post.
+async function followUpOrContinue(ctx: Ctx, post: Post) {
+  if (post.meta.followUpAsked) {
+    await showOptionsStart(ctx, post);
+    return;
+  }
+  await askNextQuestion(ctx, post);
+}
+
+async function askNextQuestion(ctx: Ctx, post: Post) {
+  const panelId = ctx.session.data.panelMessageId!;
+  const asked = ctx.session.data.followUpCount ?? 0;
+  if (asked >= MAX_INTERVIEW_QUESTIONS) {
+    await endInterview(ctx, post);
+    return;
+  }
+
+  await editMessage(ctx.chatId, panelId, asked === 0 ? "Reviewing the story…" : "Noted. Reviewing…");
+  let question = "";
+  try {
+    const result = await withTyping(ctx.chatId, () =>
+      nextInterviewQuestion(post.transcript!, ctx.session.data.skippedQuestions ?? []),
+    );
+    question = result.question;
+    await addPostCost(post.id, result.costUsd);
+  } catch (error) {
+    // Not essential: if the check fails, carry on to the options.
+    console.error("interview question failed", error);
+  }
+  if (!question) {
+    await endInterview(ctx, post);
+    return;
+  }
+
+  ctx.session.step = "awaiting_followup";
+  ctx.session.data.followUpQuestion = question;
+  ctx.session.data.followUpCount = asked + 1;
+  await saveSession(ctx.user.id, ctx.session);
+  const intro = asked === 0 ? "A few questions first, so the post has real detail.\n\n" : "";
+  await editMessage(
+    ctx.chatId,
+    panelId,
+    `${intro}Question ${asked + 1}: ${question}\n\nAnswer with a voice note or text.`,
+    interviewKeyboard,
+  );
+}
+
+async function endInterview(ctx: Ctx, post: Post) {
+  const meta = { ...post.meta, followUpAsked: true };
+  await updatePost(post.id, { meta });
+  ctx.session = { step: "idle", data: { postId: post.id, panelMessageId: ctx.session.data.panelMessageId } };
+  await saveSession(ctx.user.id, ctx.session);
+  await showOptionsStart(ctx, { ...post, meta });
+}
+
+async function answerFollowUp(ctx: Ctx, answer: string) {
+  const post = ctx.session.data.postId ? await getPost(ctx.session.data.postId) : null;
+  if (!post) {
+    await resetSession(ctx);
+    await chat(ctx, answer);
+    return;
+  }
+  const question = ctx.session.data.followUpQuestion ?? "More context";
+  const transcript = `${post.transcript}\n\nQ: ${question}\nA: ${answer}`;
+  await updatePost(post.id, { transcript });
+  // The answer pushed the panel up; continue in a fresh one at the bottom.
+  const panel = await sendMessage(ctx.chatId, "Noted.");
+  ctx.session.step = "idle";
+  ctx.session.data.panelMessageId = panel.message_id;
+  ctx.session.data.followUpQuestion = undefined;
+  await saveSession(ctx.user.id, ctx.session);
+  await askNextQuestion(ctx, { ...post, transcript });
+}
+
+async function skipQuestion(ctx: Ctx, post: Post) {
+  const question = ctx.session.data.followUpQuestion;
+  ctx.session.step = "idle";
+  ctx.session.data.skippedQuestions = [...(ctx.session.data.skippedQuestions ?? []), ...(question ? [question] : [])];
+  ctx.session.data.followUpQuestion = undefined;
+  await saveSession(ctx.user.id, ctx.session);
+  await askNextQuestion(ctx, post);
+}
+
+async function answerFollowUpVoice(ctx: Ctx, audio: TgAudioFile) {
+  if (audio.duration > MAX_VOICE_SECONDS || (audio.file_size ?? 0) > MAX_FILE_BYTES) {
+    await sendMessage(ctx.chatId, "That answer is too long. Please keep it under 5 minutes.");
+    return;
+  }
+  try {
+    const { text, costUsd } = await withTyping(ctx.chatId, () =>
+      transcribeVoice(audio.file_id, audio.duration, audio.file_name),
+    );
+    if (ctx.session.data.postId) await addPostCost(ctx.session.data.postId, costUsd);
+    if (!text) {
+      await sendMessage(ctx.chatId, "No speech detected. Please answer again, or type it.");
+      return;
+    }
+    await answerFollowUp(ctx, text);
+  } catch (error) {
+    console.error("interview transcription failed", error);
+    await sendMessage(ctx.chatId, "Couldn't transcribe that. Please type the answer instead.");
+  }
+}
+
+// ---------- /style ----------
+
+async function showStyle(ctx: Ctx) {
+  const profile = await getProfile(ctx.user.id);
+  if (profile.styleGuide) {
+    await sendMessage(
+      ctx.chatId,
+      `Your style profile:\n\n${profile.styleSummary ?? ""}\n\nNew posts are written in this style.`,
+      {
+        inline_keyboard: [
+          [
+            { text: "Update", callback_data: "st:new" },
+            { text: "Remove", callback_data: "st:reset" },
+          ],
+        ],
+      },
+    );
+    return;
+  }
+  await startStyle(ctx);
+}
+
+async function startStyle(ctx: Ctx, messageId?: number) {
+  ctx.session = { step: "awaiting_style", data: { styleSamples: [] } };
+  await saveSession(ctx.user.id, ctx.session);
+  const text =
+    "Send 2 or 3 of your past LinkedIn posts, one per message. Copy the text from LinkedIn and paste it here. I'll match their style: rhythm, openings, endings, emoji.";
+  if (messageId) await editMessage(ctx.chatId, messageId, text);
+  else await sendMessage(ctx.chatId, text);
+}
+
+async function addStyleSample(ctx: Ctx, text: string) {
+  const samples = [...(ctx.session.data.styleSamples ?? []), text.slice(0, 3500)];
+  ctx.session.data.styleSamples = samples;
+  await saveSession(ctx.user.id, ctx.session);
+  if (samples.length >= 3) {
+    await learnFromSamples(ctx);
+    return;
+  }
+  await sendMessage(ctx.chatId, `Post ${samples.length} received. Send another, or tap Done.`, {
+    inline_keyboard: [[{ text: `Done (${samples.length})`, callback_data: "st:done" }]],
+  });
+}
+
+async function learnFromSamples(ctx: Ctx, messageId?: number) {
+  const samples = ctx.session.data.styleSamples ?? [];
+  if (samples.length === 0) {
+    await sendMessage(ctx.chatId, "Send at least one post first.");
+    return;
+  }
+  const status = messageId ?? (await sendMessage(ctx.chatId, "Analyzing your style…")).message_id;
+  if (messageId) await editMessage(ctx.chatId, messageId, "Analyzing your style…");
+  try {
+    const { guide, summary } = await withTyping(ctx.chatId, () => learnStyle(samples));
+    await updateProfile(ctx, { styleGuide: guide, styleSummary: summary });
+    await resetSession(ctx);
+    await editMessage(
+      ctx.chatId,
+      status,
+      `Style saved.\n\n${summary}\n\nNew posts will be written in this style. Use /style to update or remove it.`,
+    );
+  } catch (error) {
+    console.error("style analysis failed", error);
+    await editMessage(ctx.chatId, status, "Style analysis failed. Please try /style again.");
+  }
+}
+
+async function styleButton(ctx: Ctx, action: string, messageId: number) {
+  if (action === "new") {
+    await startStyle(ctx, messageId);
+  } else if (action === "reset") {
+    await updateProfile(ctx, { styleGuide: undefined, styleSummary: undefined });
+    await editMessage(ctx.chatId, messageId, "Style removed. New posts use the default style.");
+  } else if (action === "done" && ctx.session.step === "awaiting_style") {
+    await learnFromSamples(ctx, messageId);
+  }
+}
+
+// ---------- /drafts ----------
+
+async function showDrafts(ctx: Ctx) {
+  const drafts = await listDraftPosts(ctx.user.id, 5);
+  if (drafts.length === 0) {
+    await sendMessage(ctx.chatId, "No unfinished posts.");
+    return;
+  }
+  const lines = drafts.map((draft, i) => {
+    const date = new Date(draft.updated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    const stage = draft.variants?.length ? "versions ready" : "story only";
+    const preview = (draft.transcript ?? "").replace(/\s+/g, " ").slice(0, 70);
+    return `${i + 1}. ${preview}…\n    ${date} · ${stage}`;
+  });
+  await sendMessage(ctx.chatId, ["Unfinished posts. Select one to continue:", "", ...lines].join("\n"), {
+    inline_keyboard: [
+      drafts.map((draft, i) => ({ text: String(i + 1), callback_data: `dr:${draft.id}` })),
+      [{ text: "Clear all", callback_data: "dr:clear" }],
+    ],
+  });
+}
+
+async function draftButton(ctx: Ctx, arg: string, messageId: number) {
+  if (arg === "clear") {
+    await discardDrafts(ctx.user.id);
+    await editMessage(ctx.chatId, messageId, "Drafts cleared.");
+    return;
+  }
+  const post = await getPost(arg);
+  if (!post || post.telegram_id !== ctx.user.id || post.status !== "draft") {
+    await sendMessage(ctx.chatId, "This draft is no longer available.");
+    return;
+  }
+  const panel = await sendMessage(ctx.chatId, "Resuming…");
+  ctx.session = { step: "idle", data: { postId: post.id, panelMessageId: panel.message_id, variantIndex: 0 } };
+  await saveSession(ctx.user.id, ctx.session);
+  if (post.variants?.length) await showVariant(ctx, post);
+  else await showOptionsStart(ctx, post);
+}
+
+// ---------- /costs ----------
+
+async function showCosts(ctx: Ctx) {
+  const costs = await costSummary(ctx.user.id);
+  const usd = (n: number) => `$${n.toFixed(2)}`;
+  const average = costs.donePosts ? usd(costs.totalUsd / costs.donePosts) : "n/a";
+  await sendMessage(
+    ctx.chatId,
+    [
+      "Approximate costs",
+      "",
+      `This month: ${usd(costs.monthUsd)} · ${costs.monthDonePosts} posts`,
+      `All time: ${usd(costs.totalUsd)} · ${costs.donePosts} posts`,
+      `Average per finished post: ${average}`,
+      "",
+      "Includes transcription, writing, visuals and edits, including unfinished posts.",
+    ].join("\n"),
+  );
 }
 
 // ---------- Errors ----------
@@ -1007,7 +1321,7 @@ async function handleCallback(query: TgCallbackQuery) {
   if (data === "mk" || data === "chat") {
     await answerCallback(query.id);
     const text = ctx.session.data.pendingText;
-    await editMessage(ctx.chatId, message.message_id, data === "mk" ? "On it ✍️" : "Got it, just chatting 🙂");
+    await editMessage(ctx.chatId, message.message_id, data === "mk" ? "Creating post…" : "Okay.");
     if (!text) return;
     ctx.session.data.pendingText = undefined;
     await saveSession(ctx.user.id, ctx.session);
@@ -1025,11 +1339,11 @@ async function handleCallback(query: TgCallbackQuery) {
       return;
     }
     if (what === "done") {
-      await editMessage(ctx.chatId, message.message_id, "Saved ✓ Send me a voice note whenever you have a story.");
+      await editMessage(ctx.chatId, message.message_id, "Settings saved.");
       return;
     }
     const prompts: Record<string, [Session["step"], string]> = {
-      photo: ["awaiting_photo", "Send me a photo of you. A clear, friendly headshot works best 📸"],
+      photo: ["awaiting_photo", "Send a headshot. A clear, well-lit photo works best."],
       name: ["awaiting_name", "What name should go on your visuals?"],
       headline: ["awaiting_headline", "What's your job title? (e.g. Software Engineer at Acme)"],
     };
@@ -1049,9 +1363,9 @@ async function handleCallback(query: TgCallbackQuery) {
     await saveSession(ctx.user.id, ctx.session);
     if (data === "ph:yes" && fileId) {
       await updateProfile(ctx, { photoFileId: fileId });
-      await editMessage(ctx.chatId, message.message_id, "Done 📸 Your photo will be on your carousels and quote cards.");
+      await editMessage(ctx.chatId, message.message_id, "Photo saved. It will appear on your carousels and quote cards.");
     } else {
-      await editMessage(ctx.chatId, message.message_id, "Okay, I won't use it.");
+      await editMessage(ctx.chatId, message.message_id, "Photo not used.");
     }
     return;
   }
@@ -1063,10 +1377,22 @@ async function handleCallback(query: TgCallbackQuery) {
     await editMessage(
       ctx.chatId,
       message.message_id,
-      `${message.text ?? ""}\n\n(skipped, you can add it later in /settings)`,
+      `${message.text ?? ""}\n\n(Skipped. You can add it later in /settings.)`,
     ).catch(() => {});
     if (ctx.session.step === "awaiting_headline") await askOnboardingPhoto(ctx);
     else await finishOnboarding(ctx);
+    return;
+  }
+
+  if (data.startsWith("st:")) {
+    await answerCallback(query.id);
+    await styleButton(ctx, data.slice(3), message.message_id);
+    return;
+  }
+
+  if (data.startsWith("dr:")) {
+    await answerCallback(query.id);
+    await draftButton(ctx, data.slice(3), message.message_id);
     return;
   }
 
@@ -1080,7 +1406,7 @@ async function handleCallback(query: TgCallbackQuery) {
     await answerCallback(query.id);
     const tagline = ctx.session.data.bannerOptions?.[Number(data.slice(3))];
     if (ctx.session.step !== "awaiting_banner" || !tagline) return;
-    await editMessage(ctx.chatId, message.message_id, `Making your banner: "${tagline}" 🎨`);
+    await editMessage(ctx.chatId, message.message_id, `Creating banner: "${tagline}"…`);
     await makeBanner(ctx, tagline);
     return;
   }
@@ -1089,13 +1415,13 @@ async function handleCallback(query: TgCallbackQuery) {
     await answerCallback(query.id);
     const post = await getPost(data.slice(3));
     if (!post || post.telegram_id !== ctx.user.id) return;
-    await sendSavedPost(ctx.chatId, post, "Here it is again 👇");
+    await sendSavedPost(ctx.chatId, post, "Saved post:");
     return;
   }
 
   // "Another image" lives under a finished post, not on the panel.
   if (data.startsWith("img:")) {
-    await answerCallback(query.id, "Painting a new one… 🎨");
+    await answerCallback(query.id, "Generating…");
     await anotherImage(ctx, data.slice(4));
     return;
   }
@@ -1104,17 +1430,21 @@ async function handleCallback(query: TgCallbackQuery) {
   const postId = ctx.session.data.postId;
   const post = postId ? await getPost(postId) : null;
   if (!post || message.message_id !== ctx.session.data.panelMessageId) {
-    await answerCallback(query.id, "That one's done. Send a new voice note to start again.");
+    await answerCallback(query.id, "This session has ended. Send a new voice note to start again.");
     return;
   }
   await answerCallback(query.id);
 
   if (data === "ok") {
-    await showOptionsStart(ctx, post);
+    await followUpOrContinue(ctx, post);
+  } else if (data === "fu:skip" && ctx.session.step === "awaiting_followup") {
+    await skipQuestion(ctx, post);
+  } else if (data === "fu:done" && ctx.session.step === "awaiting_followup") {
+    await endInterview(ctx, post);
   } else if (data === "fix") {
     ctx.session.step = "awaiting_correction";
     await saveSession(ctx.user.id, ctx.session);
-    await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, "No problem. Send me the right version as text 👇");
+    await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, "Send the corrected transcript as text. The current version is below.");
     // Plain copy so it's easy to copy, edit and send back.
     await sendMessage(ctx.chatId, post.transcript ?? "");
   } else if (data.startsWith("o:")) {
@@ -1142,14 +1472,14 @@ async function handleCallback(query: TgCallbackQuery) {
   } else if (data.startsWith("a:") && ctx.session.step === "adjusting") {
     const action = data.slice(2);
     if (action === "done") {
-      await editMessage(ctx.chatId, message.message_id, "Saved ✓ Good luck with the post! Send me a voice note whenever you have another story.");
+      await editMessage(ctx.chatId, message.message_id, "Saved. Send a voice note whenever you have the next story.");
       await resetSession(ctx);
     } else if (action === "remind") {
       await updatePost(post.id, { meta: { ...post.meta, remindOn: tomorrowInRomania(), remindedAt: undefined } });
       await editMessage(
         ctx.chatId,
         message.message_id,
-        `⏰ Done. I'll send it back to you tomorrow morning, a good time to post.\n\n${ADJUST_TEXT}`,
+        `Reminder set for tomorrow morning.\n\n${ADJUST_TEXT}`,
         adjustKeyboard,
       );
     } else if (action === "hook") {
@@ -1160,7 +1490,7 @@ async function handleCallback(query: TgCallbackQuery) {
   } else if (data === "retry") {
     const retry = ctx.session.data.retry;
     if (retry === "transcribe") {
-      await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, "Trying again… 🎧");
+      await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, "Retrying…");
       await transcribe(ctx, post);
     } else if (retry === "generate") {
       await generate(ctx, post);

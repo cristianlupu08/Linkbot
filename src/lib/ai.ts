@@ -56,9 +56,9 @@ const CHAT_SYSTEM = `You are LinkBot, a Telegram bot that helps people turn real
 
 How you talk:
 - Short. One to three sentences, usually. No lists, no headings, no markdown.
-- Warm, relaxed, a little playful. Reply in the language the user writes in.
+- Friendly but professional, like a sharp colleague. Reply in the language the user writes in.
 - Never use corporate filler ("Great question!", "I'm here to help", "How can I assist you today?").
-- At most one emoji, and only when it fits.
+- No emoji unless the user uses them first.
 
 What you do:
 - If the user just says hi or makes small talk, answer naturally, like a friend would. When it fits, get curious about what's been happening at their work lately, because that's where post ideas come from. Don't push it every message.
@@ -80,9 +80,9 @@ export async function chatReply(history: ChatTurn[], firstName: string): Promise
   });
 
   if (response.stop_reason === "refusal") {
-    return "Hmm, I'd rather not go there. Tell me something that happened at work instead?";
+    return "I can't help with that. Is there a work story you'd like to turn into a post?";
   }
-  return textOf(response) || "Sorry, I lost my train of thought. Say that again?";
+  return textOf(response) || "Sorry, something went wrong. Could you repeat that?";
 }
 
 // ---------- Post variants, hooks and image idea ----------
@@ -139,6 +139,7 @@ export async function generateVariants(
   transcript: string,
   options: PostOptions,
   firstName: string,
+  styleGuide?: string,
 ): Promise<{ variants: Variant[]; hooks: string[]; quote: string; imagePrompt: string; costUsd: number }> {
   const request = [
     `Tone: ${options.tone}.`,
@@ -146,6 +147,7 @@ export async function generateVariants(
     `Written for: ${options.audience}.`,
     `Emoji: ${EMOJI_GUIDE[options.emoji]}`,
     `Ending: ${endingGuide(options.ending, firstName)}`,
+    ...styleLines(styleGuide),
     "",
     "The story, as the person told it:",
     "<story>",
@@ -269,32 +271,42 @@ export async function generateSlides(
   return { slides, costUsd };
 }
 
-// ---------- Score and first comment ----------
+// ---------- Final polish, score and first comment ----------
 
-const REVIEW_SYSTEM = `You are a blunt, kind LinkedIn editor. Rate a post from 1 to 10 for how well it will do on LinkedIn: hook strength, concreteness, readability on a phone, authenticity (does it sound like a real person, not AI), and the ending.
+const POLISH_SYSTEM = `You are a sharp LinkedIn editor doing a final pass on a post before the author sees it.
 
-Be honest: 9-10 is rare. Give 1 or 2 tips, each one short, specific and actionable for this exact post (quote the part you mean). No generic advice. If it's already strong, one tip is enough.
+1. Polish: fix craft problems yourself. Cut filler lines ("That is my story", "as it happened"), recap paragraphs that repeat what was already said, clichés and anything that sounds like AI. Tighten weak sentences.
+   Hard limits: keep the first line exactly as it is. Keep the overall structure, voice and ending type. Keep the hashtags. Never add facts, numbers, names, places or events that aren't in the story. If the post is already good, return it unchanged.
+2. Score the polished post from 1 to 10 for how well it will do on LinkedIn: hook, concreteness, readability on a phone, authenticity, ending. Be honest, 9-10 is rare.
+3. question: only if the post would be clearly stronger with one fact that only the author knows and that the story doesn't contain, write one short question asking for it (under 20 words). Otherwise an empty string.
+4. firstComment: the comment the author should post under their own post right after publishing. One to three short sentences, in the author's voice, adding a small extra detail or angle from the story (never invented) or asking readers something specific. If the story mentions a link or resource, put it here. Plain text, no emoji unless the post uses them.
 
-Also write firstComment: the comment the author should post under their own post right after publishing, to get the conversation going. One to three short sentences, in the author's voice, adding a small extra detail or angle from the story (never invented) or asking readers something specific. If the story mentions a link or resource, put it here. Plain text, at most one emoji.`;
+No em dashes. Plain text, no markdown.`;
 
-export async function reviewPost(
+export async function polishPost(
   post: string,
   transcript: string,
-): Promise<{ score: number; tips: string[]; firstComment: string; costUsd: number }> {
-  const { data, costUsd } = await askJson<{ score: number; tips: string[]; firstComment: string }>(
-    REVIEW_SYSTEM,
-    `<post>\n${post}\n</post>\n\nThe original story, for the first comment:\n<story>\n${transcript}\n</story>`,
+): Promise<{ text: string; score: number; question: string; firstComment: string; costUsd: number }> {
+  const { data, costUsd } = await askJson<{ post: string; score: number; question: string; firstComment: string }>(
+    POLISH_SYSTEM,
+    `<post>\n${post}\n</post>\n\nThe original story (the only source of facts):\n<story>\n${transcript}\n</story>`,
     {
       type: "object",
-      properties: { score: { type: "integer" }, tips: stringArray, firstComment: { type: "string" } },
-      required: ["score", "tips", "firstComment"],
+      properties: {
+        post: { type: "string" },
+        score: { type: "integer" },
+        question: { type: "string" },
+        firstComment: { type: "string" },
+      },
+      required: ["post", "score", "question", "firstComment"],
       additionalProperties: false,
     },
-    "low",
+    "medium",
   );
   return {
+    text: data.post.trim() || post,
     score: Math.min(10, Math.max(1, Math.round(data.score))),
-    tips: data.tips.slice(0, 2),
+    question: data.question.trim(),
     firstComment: data.firstComment.trim(),
     costUsd,
   };
@@ -314,11 +326,13 @@ export async function revisePost(
   post: string,
   instruction: string,
   transcript: string,
+  styleGuide?: string,
 ): Promise<{ text: string; costUsd: number }> {
   const { data, costUsd } = await askJson<{ post: string }>(
     REVISE_SYSTEM,
     [
       `Instruction: ${instruction}`,
+      ...styleLines(styleGuide),
       "",
       "<post>",
       post,
@@ -410,4 +424,72 @@ export async function suggestTaglines(
     "low",
   );
   return data.taglines.map((t) => t.trim()).filter(Boolean).slice(0, 3);
+}
+
+// ---------- Personal style (/style) ----------
+
+function styleLines(styleGuide?: string) {
+  return styleGuide
+    ? ["", "Write in this person's own style, learned from their past posts (style only, never reuse their facts):", styleGuide]
+    : [];
+}
+
+const STYLE_SYSTEM = `You study someone's past LinkedIn posts and describe how they write, so a ghostwriter can match it.
+
+Describe only style, never topics or facts: sentence length and rhythm, paragraph length, how they open, how they close, use of questions, emoji (how many, which kind), hashtags, formatting (line breaks, lists), vocabulary and register (formal, casual, technical), humor, and any signature phrases.
+
+Write guide: 6 to 10 short bullet lines starting with "- ", concrete and specific ("Opens with a one-line confession", not "engaging openings").
+Write summary: one short sentence describing their style, for the user to read. English.`;
+
+export async function learnStyle(samples: string[]): Promise<{ guide: string; summary: string; costUsd: number }> {
+  const { data, costUsd } = await askJson<{ guide: string; summary: string }>(
+    STYLE_SYSTEM,
+    samples.map((sample, i) => `<post ${i + 1}>\n${sample}\n</post ${i + 1}>`).join("\n\n"),
+    {
+      type: "object",
+      properties: { guide: { type: "string" }, summary: { type: "string" } },
+      required: ["guide", "summary"],
+      additionalProperties: false,
+    },
+    "low",
+  );
+  return { guide: data.guide.trim(), summary: data.summary.trim(), costUsd };
+}
+
+// ---------- Interview: questions about the story before writing ----------
+
+const INTERVIEW_SYSTEM = `You interview someone about a story they told for a LinkedIn post, so the post can be written well. You ask one question at a time and decide the next one based on everything they've said so far.
+
+Ask about what's genuinely missing, most important first:
+- The stakes: what it cost them (time, money, effort, a risk, a mistake, a hard conversation). Stories without a cost read like bragging.
+- The why: why they did what they did, what was going through their head.
+- Concrete details that make it real: where, when, who (roles, not necessarily names), numbers they can share.
+- How it ended, and what they took from it, if that's unclear.
+
+Rules:
+- Return the single best next question, short (under 20 words), specific to this story, easy to answer out loud.
+- Never ask about something they already answered or that the story already makes clear.
+- If the story now has clear stakes, enough concrete detail and a clear ending, return an empty question. Don't ask for nice-to-haves.
+- Be sparing: a complete story needs no questions, most stories need one or two. When in doubt, return an empty question.
+- English, plain text.`;
+
+export async function nextInterviewQuestion(
+  transcript: string,
+  skipped: string[],
+): Promise<{ question: string; costUsd: number }> {
+  const skippedNote = skipped.length
+    ? `\n\nQuestions they chose to skip (don't ask these or anything close to them):\n${skipped.map((q) => `- ${q}`).join("\n")}`
+    : "";
+  const { data, costUsd } = await askJson<{ question: string }>(
+    INTERVIEW_SYSTEM,
+    `<story>\n${transcript}\n</story>${skippedNote}`,
+    {
+      type: "object",
+      properties: { question: { type: "string" } },
+      required: ["question"],
+      additionalProperties: false,
+    },
+    "low",
+  );
+  return { question: data.question.trim(), costUsd };
 }

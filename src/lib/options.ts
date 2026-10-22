@@ -205,7 +205,7 @@ export function describeVisual(options: PostOptions) {
 
 export function summaryText(options: PostOptions, fromLastTime: boolean) {
   return [
-    fromLastTime ? "Same as last time? Here's the plan:" : "Here's the plan:",
+    fromLastTime ? "Using your last settings:" : "Summary:",
     "",
     `Tone: ${options.tone}`,
     `Length: ${options.length}`,
@@ -219,8 +219,8 @@ export function summaryText(options: PostOptions, fromLastTime: boolean) {
 export const summaryKeyboard: ReplyMarkup = {
   inline_keyboard: [
     [
-      { text: "Write it ✍️", callback_data: "gen" },
-      { text: "Change something", callback_data: "sc:0" },
+      { text: "Generate", callback_data: "gen" },
+      { text: "Edit settings", callback_data: "sc:0" },
     ],
   ],
 };

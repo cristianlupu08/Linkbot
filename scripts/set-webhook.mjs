@@ -39,7 +39,10 @@ await api("setMyCommands", {
   commands: [
     { command: "new", description: "Start a new post" },
     { command: "ideas", description: "No story in mind? I will ask you 3 questions" },
+    { command: "style", description: "Match the writing style of your past posts" },
+    { command: "drafts", description: "Resume unfinished posts" },
     { command: "history", description: "Your last posts, ready to send again" },
+    { command: "costs", description: "What your posts have cost" },
     { command: "banner", description: "A LinkedIn profile banner in your style" },
     { command: "settings", description: "Your photo, name and job title for the visuals" },
     { command: "help", description: "How it works + tips for a good voice note" },
