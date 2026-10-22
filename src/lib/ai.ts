@@ -241,6 +241,7 @@ Rules:
 - Max about 30 words per slide in total. Big text, so less is more.
 - The cover title is the hook given to you, word for word. The cover body is a short teaser (under 10 words) that makes people swipe.
 - Each slide should make people want the next one.
+- Be specific to this story: its concrete moments, numbers, places and the person's own words. Never generic advice that could fit any post ("Expect the plan to break", "Work with what you have"). Even in a Tips carousel, each tip is anchored in a moment from the story.
 ${NO_INVENTION}
 - English. Plain text, no emoji (the font can't show them), no hashtags, no markdown, no slide numbers.
 - No em dashes; use commas or periods.`;
@@ -557,4 +558,59 @@ export async function planImage(
     "low",
   );
   return { question: data.question.trim(), summary: data.summary.trim(), prompt: data.prompt.trim(), costUsd };
+}
+
+// ---------- Photos for a carousel ----------
+
+const CAROUSEL_PHOTOS_SYSTEM = `You plan the photos for someone's LinkedIn carousel (a swipeable PDF of slides). The first photo goes on the cover, the others on key slides in the middle of the story.
+
+Return:
+- question: if they described what they want and something important is unclear (the main subject, the setting, whether people appear), one short question, under 20 words. Otherwise an empty string. If they haven't described anything and you're proposing photos yourself, don't ask anything.
+- photos: exactly the number of photos asked for, in story order. For each:
+  - description: one short plain sentence for the user, e.g. "The river bank at dawn, your rod against a tree".
+  - prompt: a detailed prompt for an image model: subject, setting, composition, light, mood, camera angle.
+
+Rules:
+- Each photo shows a concrete moment or place from this story, not a generic stock idea. Use what the story and the person say; fill gaps with ordinary, believable choices.
+- Every photo must look like a real photograph taken by a person: candid, ordinary, believable. Never like AI.
+- Don't show the author's face unless they explicitly ask for a person who is them; prefer places, objects, hands, or people from behind.
+- No text, letters, numbers, logos or readable screens. English.`;
+
+export async function planCarouselPhotos(
+  post: string,
+  count: number,
+  brief: string,
+): Promise<{ question: string; photos: { description: string; prompt: string }[]; costUsd: number }> {
+  const { data, costUsd } = await askJson<{ question: string; photos: { description: string; prompt: string }[] }>(
+    CAROUSEL_PHOTOS_SYSTEM,
+    [
+      `Number of photos: ${count}`,
+      "",
+      "The post:",
+      "<post>",
+      post,
+      "</post>",
+      "",
+      brief ? `What they've said about the photos:\n<brief>\n${brief}\n</brief>` : "They haven't described anything yet: propose the photos yourself.",
+    ].join("\n"),
+    {
+      type: "object",
+      properties: {
+        question: { type: "string" },
+        photos: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { description: { type: "string" }, prompt: { type: "string" } },
+            required: ["description", "prompt"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["question", "photos"],
+      additionalProperties: false,
+    },
+    "low",
+  );
+  return { question: data.question.trim(), photos: data.photos.slice(0, count), costUsd };
 }

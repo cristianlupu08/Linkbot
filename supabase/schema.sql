@@ -60,3 +60,13 @@ alter table sessions enable row level security;
 alter table processed_updates enable row level security;
 alter table chat_messages enable row level security;
 alter table posts enable row level security;
+
+-- Photos a user sends for a carousel (one row each, so an album can't overwrite itself).
+create table if not exists post_photos (
+  id bigint generated always as identity primary key,
+  post_id uuid not null,
+  file_id text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists post_photos_post_idx on post_photos (post_id, id);
+alter table post_photos enable row level security;

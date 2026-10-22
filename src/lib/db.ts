@@ -74,6 +74,9 @@ export type Step =
   // Choosing the visual: describing an image to generate, or sending your own photo.
   | "awaiting_image_brief"
   | "awaiting_user_image"
+  // Carousel photos: sending your own, or describing the ones to create.
+  | "awaiting_carousel_photos"
+  | "awaiting_photo_brief"
   // After the final post: free text is an edit instruction.
   | "adjusting";
 
@@ -114,6 +117,11 @@ export type SessionData = {
   imageSummary?: string;
   imagePlan?: string;
   changingVisual?: boolean;
+  // Carousel photos being planned: what the user said, our question, and the proposed photos.
+  photoBrief?: string;
+  photoQuestion?: string;
+  photoQuestionAsked?: boolean;
+  photoPlan?: { description: string; prompt: string }[];
 };
 
 export type Session = { step: Step; data: SessionData };
@@ -174,6 +182,9 @@ export type PostMeta = {
   followUpAsked?: boolean;
   // The user's own photo for the post (instead of a generated image).
   userImageFileId?: string;
+  // Photos inside the carousel: the user's own (in post_photos), created from these prompts, or none.
+  carouselPhotoMode?: "own" | "generate" | "none";
+  carouselPhotoPrompts?: string[];
   // The visual as Telegram stored it, so /history and reminders can resend it without rebuilding.
   visual?: { kind: "photo" | "document"; fileId: string };
   // "2026-10-23": send the post back that morning. remindedAt is set once it's sent.
@@ -293,4 +304,29 @@ export async function costSummary(telegramId: number): Promise<CostSummary> {
     }
   }
   return summary;
+}
+
+// ---------- Photos the user sends for a carousel ----------
+// One row per photo: Telegram delivers an album as separate messages at the same moment,
+// and separate inserts can't overwrite each other the way a shared list in the session could.
+
+export async function addPostPhoto(postId: string, fileId: string): Promise<number> {
+  check(await db().from("post_photos").insert({ post_id: postId, file_id: fileId }));
+  const { count, error } = await db()
+    .from("post_photos")
+    .select("id", { count: "exact", head: true })
+    .eq("post_id", postId);
+  if (error) throw new Error(`Supabase: ${error.message}`);
+  return count ?? 0;
+}
+
+export async function listPostPhotos(postId: string): Promise<string[]> {
+  const rows = check(
+    await db().from("post_photos").select("file_id").eq("post_id", postId).order("id"),
+  ) as { file_id: string }[];
+  return rows.map((row) => row.file_id);
+}
+
+export async function clearPostPhotos(postId: string) {
+  check(await db().from("post_photos").delete().eq("post_id", postId));
 }

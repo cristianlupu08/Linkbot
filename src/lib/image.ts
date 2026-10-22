@@ -11,13 +11,16 @@ const REALISM = `Style: an authentic, candid photograph that looks taken by a re
 
 Absolutely no text, letters, words, numbers, logos or watermarks anywhere in the image.`;
 
-export async function generateImage(prompt: string): Promise<{ png: Buffer; costUsd: number }> {
+// Portrait takes the most space in the LinkedIn feed; carousel photos are landscape.
+export async function generateImage(
+  prompt: string,
+  size: "1024x1536" | "1536x1024" = "1024x1536",
+): Promise<{ png: Buffer; costUsd: number }> {
   client ??= new OpenAI();
   const result = await client.images.generate({
     model: "gpt-image-2",
     prompt: `${prompt}\n\n${REALISM}`,
-    // Portrait takes the most space in the LinkedIn feed.
-    size: "1024x1536",
+    size,
     quality: "medium",
     n: 1,
   });

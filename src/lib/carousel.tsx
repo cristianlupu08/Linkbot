@@ -182,15 +182,28 @@ type SlideProps = {
   theme: Theme;
   // Tips carousels get a huge number on each tip slide.
   numbered: boolean;
+  // A photo for this slide (data: URI), shown above the words.
+  photo?: string;
 };
 
-function SlideView({ slide, index, total, profile, theme, numbered }: SlideProps) {
+const CONTENT_WIDTH = SLIDE_WIDTH - 92 * 2;
+
+function SlidePhoto({ src, height }: { src: string; height: number }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} width={CONTENT_WIDTH} height={height} alt="" style={{ borderRadius: 28, objectFit: "cover" }} />
+  );
+}
+
+function SlideView({ slide, index, total, profile, theme, numbered, photo }: SlideProps) {
   const p = theme.palettes[index % theme.palettes.length];
   const isCover = index === 0;
   const isLast = index === total - 1;
-  const bigNumber = numbered && !isCover && !isLast;
-  // With a photo, the cover and the closing slide show the person big: people follow people.
-  const showBigAuthor = isLast && Boolean(profile.photo);
+  // A slide photo takes the space the huge tip number would use.
+  const bigNumber = numbered && !isCover && !isLast && !photo;
+  // With a profile photo, the closing slide shows the person big: people follow people.
+  const showBigAuthor = isLast && Boolean(profile.photo) && !photo;
+  const titleSz = photo ? Math.min(titleSize(slide.title, isCover), isCover ? 80 : 64) : titleSize(slide.title, isCover);
 
   return (
     <div
@@ -207,7 +220,7 @@ function SlideView({ slide, index, total, profile, theme, numbered }: SlideProps
     >
       {/* Top: photo on the cover, slide number on the others */}
       <div style={{ display: "flex", alignItems: "center" }}>
-        {isCover && profile.photo ? (
+        {isCover && profile.photo && !photo ? (
           <Avatar profile={profile} size={200} p={p} />
         ) : isCover || isLast || bigNumber ? (
           <div style={{ width: 120, height: 14, backgroundColor: p.accent, borderRadius: 7 }} />
@@ -228,8 +241,22 @@ function SlideView({ slide, index, total, profile, theme, numbered }: SlideProps
         )}
       </div>
 
+      {photo ? (
+        <div style={{ display: "flex", marginTop: 40 }}>
+          <SlidePhoto src={photo} height={600} />
+        </div>
+      ) : null}
+
       {/* Middle: the words */}
-      <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, justifyContent: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flexGrow: 1,
+          justifyContent: photo ? "flex-start" : "center",
+          marginTop: photo ? 44 : 0,
+        }}
+      >
         {bigNumber ? (
           <div
             style={{
@@ -245,13 +272,13 @@ function SlideView({ slide, index, total, profile, theme, numbered }: SlideProps
             {String(index).padStart(2, "0")}
           </div>
         ) : null}
-        <Title text={slide.title} size={titleSize(slide.title, isCover)} theme={theme} />
+        <Title text={slide.title} size={titleSz} theme={theme} />
         {slide.body ? (
           <div
             style={{
               display: "flex",
-              marginTop: 44,
-              fontSize: bodySize(slide.body),
+              marginTop: photo ? 24 : 44,
+              fontSize: photo ? Math.min(bodySize(slide.body), 34) : bodySize(slide.body),
               lineHeight: 1.4,
               color: isCover ? p.muted : p.text,
               opacity: isCover ? 1 : 0.88,
@@ -311,6 +338,7 @@ export function renderSlidePng(
   style: CarouselStyle,
   profile: Profile,
   numbered = false,
+  photo?: string,
 ) {
   return toPng(
     <SlideView
@@ -320,8 +348,20 @@ export function renderSlidePng(
       profile={profile}
       theme={THEMES[style]}
       numbered={numbered}
+      photo={photo}
     />,
   );
+}
+
+// Which slides get the photos: the first on the cover, the rest spread over the middle slides.
+export function photoSlots(slideCount: number, photoCount: number): number[] {
+  if (photoCount <= 0) return [];
+  const middle = Array.from({ length: Math.max(0, slideCount - 2) }, (_, i) => i + 1);
+  const rest = photoCount - 1;
+  const picked = Array.from({ length: Math.min(rest, middle.length) }, (_, i) =>
+    middle[Math.floor(((i + 0.5) * middle.length) / Math.min(rest, middle.length))],
+  );
+  return [0, ...picked];
 }
 
 // Renders every slide and stitches them into one PDF. Returns the PDF and the cover PNG (for the preview).
@@ -331,8 +371,17 @@ export async function buildCarousel(
   profile: Profile,
   title: string,
   numbered = false,
+  // Photos as data: URIs, placed on the cover and spread over the middle slides.
+  photos: string[] = [],
 ): Promise<{ pdf: Uint8Array; cover: Buffer }> {
-  const pngs = await Promise.all(slides.map((_, i) => renderSlidePng(slides, i, style, profile, numbered)));
+  const slots = photoSlots(slides.length, photos.length);
+  const photoFor = (i: number) => {
+    const at = slots.indexOf(i);
+    return at === -1 ? undefined : photos[at];
+  };
+  const pngs = await Promise.all(
+    slides.map((_, i) => renderSlidePng(slides, i, style, profile, numbered, photoFor(i))),
+  );
 
   const pdf = await PDFDocument.create();
   pdf.setTitle(title);
