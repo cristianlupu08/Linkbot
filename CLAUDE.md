@@ -119,4 +119,5 @@ Generată de AI pe baza poveștii, **fără text în imagine**, sau trimisă de 
 - **Idei rămase pe listă:** culoare de brand în /settings, slide cu cifră mare, titlu de document la PDF (acum e sugerat din hook).
 - **22.10.2026, a doua rundă de îmbunătățiri (live, testate automat):** bară de progres pe slide-uri + cifre mari la structura „Tips”; /ideas (3 întrebări care scot o poveste); /history (ultimele 5 postări, retrimise prin file_id salvat în `posts.meta.visual`); [⏰ Remind me tomorrow morning] + cron zilnic la 06:00 UTC (`/api/cron/reminders`, protejat cu `CRON_SECRET`); /banner (banner de profil 1584×396 în 3 stiluri, cu 3 texte propuse).
 - **Decizie:** totul rămâne în engleză (fără opțiune de limbă română).
+- **Onboarding (live, testat):** la primul /start, configurare ghidată (titlu de job, poză, ambele cu [Skip]), sfaturi după prima postare, descrierea botului setată prin `set-webhook`. Link de invitație verificat pe Vercel: `t.me/linkbot_cristi_bot?start=<INVITE_CODE>`.
 - **Următorul pas:** întrebarea „ce te-a costat?”, apoi etapa 5 (/stil, /ciorne, statistica de costuri).
