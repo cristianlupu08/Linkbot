@@ -108,6 +108,7 @@ Generată de AI pe baza poveștii, **fără text în imagine**, sau trimisă de 
 
 (Actualizează la finalul fiecărei sesiuni: ce s-a terminat, ce nu merge încă, care e următorul pas.)
 
-- **22.10.2026, etapa 1 (în lucru):** proiect Next.js 16 creat, webhook la `/api/telegram` (verifică secretul, răspunde imediat cu 200, munca se face în `after()`), lista de acces din `ALLOWED_TELEGRAM_IDS`, /start și ecou la mesaj text. Testat local: fără secret 403, cu secret 200. Scriptul `npm run set-webhook <url>` setează webhook-ul.
-- Lipsește (manual): botul la BotFather, ID-urile Telegram, repo GitHub, deploy Vercel, apoi rularea `set-webhook`.
-- Amânat pentru etapa 2 (când intră Supabase): evidența `update_id`-urilor procesate și mutarea listei de acces în Supabase.
+- **22.10.2026, etapa 1 terminată și testată în Telegram.** Bot: @linkbot_cristi_bot. Live: https://linkbot-ten.vercel.app (Vercel legat de github.com/cristianlupu08/Linkbot, deploy automat la push). Webhook securizat la `/api/telegram` (răspunde imediat, munca în `after()`), acces doar pentru ID-ul meu (`ALLOWED_TELEGRAM_IDS`), /start prietenos, iar la text liber răspunde natural prin Claude (`src/lib/ai.ts`, fără memorie între mesaje deocamdată).
+- De făcut la final de etapă: token nou de bot (@BotFather → /revoke), pentru că cel vechi a apărut într-un screenshot. Se pune în `.env.local` și în Vercel.
+- Amânat pentru etapa 2 (când intră Supabase): evidența `update_id`-urilor, memoria conversației, link-ul de invitație, butonul [Retry] la erori.
+- **Următorul pas:** etapa 2 (vocal → transcriere → opțiuni → 3 variante → postarea finală).
