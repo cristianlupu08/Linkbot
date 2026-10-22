@@ -92,7 +92,23 @@ const NO_INVENTION = `- Use only what is in the story. Never add numbers, names,
 
 const POST_SYSTEM = `You are a ghostwriter who turns a person's spoken story into a LinkedIn post that sounds like them, not like AI.
 
-Structure that works on LinkedIn: a concrete moment -> the tension -> the turn -> the lesson. Short paragraphs (1-2 sentences), lots of white space. The first line must make people stop scrolling, because LinkedIn hides everything after roughly the first 200 characters behind "…see more".
+It must read like a strong LinkedIn post, not like a chat message.
+
+The top (what people see before "…see more"):
+- On mobile LinkedIn shows only about the first 3 lines (~140 characters). Everything that decides whether people keep reading must be there.
+- Line 1 is the hook: short, concrete, standing alone on its own line. Curiosity, tension or a surprising contrast. Never a greeting, never "I want to share".
+- Line 2 (after a blank line) deepens the hook so people tap "see more": the stakes, a twist, or the moment it went wrong.
+
+The body:
+- Story arc: a concrete moment -> the tension or cost -> the turn -> what it taught them.
+- Paragraphs of 1 to 3 sentences, separated by exactly one blank line. Never a wall of text.
+- Vary the rhythm on purpose. Use a few short one-line paragraphs for punch at key moments, mixed with normal 2-3 sentence paragraphs. Do NOT put every single sentence on its own line: a post made only of one-liners looks like a stream of chat messages.
+- Concrete beats abstract: specific moments, numbers and words they actually said.
+- If there are several lessons or steps, a short list is fine: each item on its own line starting with "→ " or "1. ", 2 to 4 items, no blank lines inside the list.
+
+The end:
+- The lesson in one or two plain sentences, then the ending asked for (a specific question that's easy to answer, an invitation to follow, or nothing). Never "Agree?", "Thoughts?" alone, or engagement bait like "Comment YES".
+- Then one blank line and 3 to 5 relevant hashtags on the last line, nothing after them.
 
 Hard rules:
 ${NO_INVENTION}
@@ -100,8 +116,7 @@ ${NO_INVENTION}
 - Write in English. If the story is in another language, carry its meaning and voice over naturally.
 - Banned: "In today's world", "game-changer", "Let's talk about", "Here's why", "Here's the thing", "I'm thrilled to announce", "humbled", "journey", "unlock", "delve", "leverage", "in the ever-evolving", "I'll be honest", "I say this sincerely", "Let that sink in". No empty motivational endings ("Never give up!", "Keep pushing!"). No em dashes; use commas or periods.
 - Never include links in the post.
-- End with 3 relevant hashtags on their own line.
-- Plain text only, no markdown, no bold.
+- Plain text only: LinkedIn shows no markdown, so no **bold**, no # headings, no bullet asterisks.
 
 Write three versions:
 - direct: gets to the point fast, clear and confident.
@@ -113,11 +128,30 @@ Also write:
 - quote: the single most quotable line of the story for a quote card, under 20 words. Ideally the person's own words, lightly tightened. No hashtags, no emoji.
 - imagePrompt: a description for an image to go with the post. A single believable scene from the story, described visually (setting, light, mood, composition), as a realistic candid photo. Don't show the storyteller's face or make them a specific person (the image must not misrepresent who they are): focus on the setting, objects, hands, or a figure seen from behind or far away. The image must contain no text, letters, numbers, logos, or readable screens.`;
 
+// Story posts do best around 1,300-2,000 characters; LinkedIn's limit is 3,000.
 const LENGTH_GUIDE: Record<PostOptions["length"], string> = {
-  Short: "about 400-700 characters",
-  Medium: "about 900-1400 characters",
-  Long: "about 1600-2400 characters",
+  Short: "about 500-800 characters",
+  Medium: "about 1200-1700 characters",
+  Long: "about 1800-2600 characters",
 };
+
+// Makes the spacing LinkedIn-clean whatever the model returned: one blank line between paragraphs,
+// no trailing spaces, no markdown bold, hashtags alone on the last line.
+export function formatForLinkedIn(text: string): string {
+  let out = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const lines = out.split("\n");
+  const last = lines[lines.length - 1] ?? "";
+  const isHashtagLine = (line: string) => /^(#\w+\s*)+$/.test(line.trim());
+  if (isHashtagLine(last) && lines.length > 1 && lines[lines.length - 2].trim() !== "") {
+    out = `${lines.slice(0, -1).join("\n")}\n\n${last.trim()}`;
+  }
+  return out;
+}
 
 const EMOJI_GUIDE: Record<PostOptions["emoji"], string> = {
   None: "No emoji at all.",
@@ -181,7 +215,7 @@ export async function generateVariants(
 
   const variants = (Object.keys(VARIANT_LABELS) as (keyof typeof VARIANT_LABELS)[]).map((key) => ({
     label: VARIANT_LABELS[key],
-    text: data[key].trim(),
+    text: formatForLinkedIn(data[key]),
   }));
   return {
     variants,
@@ -276,6 +310,7 @@ export async function generateSlides(
 const POLISH_SYSTEM = `You are a sharp LinkedIn editor doing a final pass on a post before the author sees it.
 
 1. Polish: fix craft problems yourself. Cut filler lines ("That is my story", "as it happened"), recap paragraphs that repeat what was already said, clichés and anything that sounds like AI. Tighten weak sentences.
+   Fix the LinkedIn formatting too: paragraphs of 1 to 3 sentences separated by exactly one blank line. If almost every sentence sits on its own line (it reads like a stream of chat messages), group related sentences into short paragraphs and keep only a few one-liners for punch. Hashtags alone on the last line.
    Hard limits: keep the first line exactly as it is. Keep the overall structure, voice and ending type. Keep the hashtags. Never add facts, numbers, names, places or events that aren't in the story. If the post is already good, return it unchanged.
 2. Score the polished post from 1 to 10 for how well it will do on LinkedIn: hook, concreteness, readability on a phone, authenticity, ending. Be honest, 9-10 is rare.
 3. question: only if the post would be clearly stronger with one fact that only the author knows and that the story doesn't contain, write one short question asking for it (under 20 words). Otherwise an empty string.
@@ -304,7 +339,7 @@ export async function polishPost(
     "medium",
   );
   return {
-    text: data.post.trim() || post,
+    text: formatForLinkedIn(data.post.trim() || post),
     score: Math.min(10, Math.max(1, Math.round(data.score))),
     question: data.question.trim(),
     firstComment: data.firstComment.trim(),
@@ -319,6 +354,7 @@ const REVISE_SYSTEM = `You edit a LinkedIn post on request. Change only what the
 Rules:
 ${NO_INVENTION}
 - If the instruction asks for a fact that isn't in the story (e.g. "add a number"), use only facts from the story; if there is none, make the smallest change that honors the spirit of the request without inventing.
+- Keep the LinkedIn formatting: paragraphs of 1 to 3 sentences separated by one blank line, hashtags alone on the last line.
 - No em dashes. Plain text, no markdown.
 - Return the full revised post.`;
 
@@ -351,7 +387,7 @@ export async function revisePost(
     },
     "low",
   );
-  return { text: data.post.trim(), costUsd };
+  return { text: formatForLinkedIn(data.post), costUsd };
 }
 
 // ---------- /ideas: questions that pull a story out ----------

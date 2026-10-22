@@ -73,8 +73,8 @@ const MAX_VOICE_SECONDS = 5 * 60;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 // Typed messages at least this long are probably a story, so we offer to turn them into a post.
 const STORY_LENGTH_HINT = 300;
-// LinkedIn shows roughly this many characters before "…see more".
-const SEE_MORE_AT = 200;
+// On mobile, LinkedIn shows roughly this many characters (about 3 lines) before "…see more".
+const SEE_MORE_AT = 140;
 
 // Context for one user in one chat, passed to every handler.
 type Ctx = { chatId: number; user: TgUser; session: Session };
@@ -704,7 +704,7 @@ function seeMorePreview(text: string) {
 function statsText(text: string, score: number, detailQuestion: string) {
   const lines = [`${text.length.toLocaleString("en-US")} characters · Score ${score}/10`];
   const preview = seeMorePreview(text);
-  if (preview) lines.push("", "Preview before “…see more”:", `"${preview}"`);
+  if (preview) lines.push("", "What mobile readers see before “…see more”:", `"${preview}"`);
   if (/https?:\/\/|www\./i.test(text)) {
     lines.push("", "Note: move the link to the first comment. Posts with links get less reach.");
   }
