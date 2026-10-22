@@ -36,7 +36,11 @@ console.log("setWebhook:", result);
 
 await api("setMyCommands", {
   // Add more commands here as they get built (/new, /settings, /history, ...).
-  commands: [{ command: "start", description: "Welcome" }],
+  commands: [
+    { command: "new", description: "Start a new post" },
+    { command: "help", description: "How it works + tips for a good voice note" },
+    { command: "start", description: "Welcome" },
+  ],
 });
 
 console.log("getWebhookInfo:", (await api("getWebhookInfo")).result);

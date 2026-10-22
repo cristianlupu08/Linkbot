@@ -3,6 +3,9 @@ import { handleUpdate } from "@/lib/bot";
 import { config } from "@/lib/config";
 import { sendMessage, type TgUpdate } from "@/lib/telegram";
 
+// Transcription and writing can take a while; give the background work up to 5 minutes.
+export const maxDuration = 300;
+
 // Telegram calls this URL for every new message (webhook).
 export async function POST(request: Request) {
   // Only Telegram knows the secret we set with setWebhook. Ignore everyone else.
@@ -24,9 +27,11 @@ export async function POST(request: Request) {
       await handleUpdate(update);
     } catch (error) {
       console.error("handleUpdate failed", update.update_id, error);
-      const chatId = update.message?.chat.id;
+      const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
       if (chatId) {
-        await sendMessage(chatId, "Something went wrong. Please try again.").catch(() => {});
+        await sendMessage(chatId, "Something didn't work on my side. Try that again in a moment?").catch(
+          () => {},
+        );
       }
     }
   });
