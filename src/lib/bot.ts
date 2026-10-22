@@ -1,5 +1,5 @@
-import { AiRefusal, chatReply, generateSlides, generateVariants, reviewPost } from "./ai";
-import { buildCarousel, type CarouselStyle } from "./carousel";
+import { AiRefusal, chatReply, generateSlides, generateVariants, revisePost, reviewPost } from "./ai";
+import { buildCarousel, renderQuoteCard, type CarouselStyle, type Profile } from "./carousel";
 import { config } from "./config";
 import {
   addChatMessages,
@@ -15,12 +15,13 @@ import {
   upsertUser,
   type Post,
   type Session,
+  type UserProfile,
 } from "./db";
 import { generateImage } from "./image";
 import {
   applyOptionTap,
-  DEFAULT_OPTIONS,
   isCarousel,
+  normalizeOptions,
   screenKeyboard,
   screenText,
   SCREEN_COUNT,
@@ -30,6 +31,7 @@ import {
 } from "./options";
 import {
   answerCallback,
+  downloadFile,
   editMessage,
   sendDocument,
   sendMessage,
@@ -63,7 +65,9 @@ function welcome(firstName: string) {
     "",
     "Got something from work lately you keep thinking about? A win, a mess-up, a weird day?",
     "",
-    "Just hit the mic and tell me like you'd tell a friend. I'll turn it into a LinkedIn post, with a carousel or an image, and you decide if it ever goes out.",
+    "Just hit the mic and tell me like you'd tell a friend. I'll turn it into a LinkedIn post, with a carousel, a quote card or an image, and you decide if it ever goes out.",
+    "",
+    "Tip: send /settings once to add your photo and job title. They'll show up on your carousels.",
   ].join("\n");
 }
 
@@ -72,9 +76,11 @@ const HELP = [
   "",
   "1. Send me a voice note with a story from work (or type /new and write it).",
   "2. Check I heard it right.",
-  "3. Pick the tone, the visual (carousel or image) and a few details.",
+  "3. Pick the tone and the visual: carousel, quote card or image. Next time I remember your choices.",
   "4. Flip through 3 versions, pick one, then pick the first line.",
-  "5. You get the post, its score, and the carousel PDF or the image. Copy it all to LinkedIn.",
+  "5. You get the post, its score, a first comment and the visual. Want changes? Just tell me.",
+  "",
+  "/settings: your photo, name and job title for the visuals.",
   "",
   "Tips for a good voice note: one story, a real moment (where you were, what happened), what was hard about it, and what you'd tell someone now. 1 to 3 minutes is perfect.",
   "",
@@ -88,6 +94,21 @@ const retryKeyboard: ReplyMarkup = {
 
 function fullName(user: TgUser) {
   return [user.first_name, user.last_name].filter(Boolean).join(" ");
+}
+
+// Edits the panel with a new line every few seconds while slow work runs, so nobody waits in silence.
+function startProgress(chatId: number, messageId: number, steps: string[], everyMs = 9000) {
+  let step = 0;
+  let pending: Promise<unknown> = editMessage(chatId, messageId, steps[0]).catch(() => {});
+  const timer = setInterval(() => {
+    if (step >= steps.length - 1) return;
+    step += 1;
+    pending = pending.then(() => editMessage(chatId, messageId, steps[step]).catch(() => {}));
+  }, everyMs);
+  return async () => {
+    clearInterval(timer);
+    await pending;
+  };
 }
 
 // ---------- Entry point ----------
@@ -142,10 +163,20 @@ async function handleMessage(message: TgMessage, user: TgUser) {
     await sendMessage(chatId, HELP);
     return;
   }
+  if (/^\/settings\b/.test(text)) {
+    await resetSession(ctx);
+    await showSettings(ctx);
+    return;
+  }
 
   const audio = message.voice ?? message.audio;
   if (audio) {
     await startFromVoice(ctx, audio);
+    return;
+  }
+
+  if (message.photo?.length) {
+    await receivePhoto(ctx, message.photo[message.photo.length - 1].file_id);
     return;
   }
 
@@ -154,9 +185,23 @@ async function handleMessage(message: TgMessage, user: TgUser) {
     return;
   }
 
-  if (ctx.session.step === "awaiting_correction") {
-    await applyCorrection(ctx, text);
-  } else if (ctx.session.step === "awaiting_story" || message.forward_origin) {
+  switch (ctx.session.step) {
+    case "awaiting_correction":
+      await applyCorrection(ctx, text);
+      return;
+    case "awaiting_name":
+    case "awaiting_headline":
+      await saveProfileText(ctx, text);
+      return;
+    case "adjusting":
+      await adjust(ctx, text);
+      return;
+    case "awaiting_story":
+      await startFromText(ctx, text);
+      return;
+  }
+
+  if (message.forward_origin) {
     await startFromText(ctx, text);
   } else if (text.length >= STORY_LENGTH_HINT) {
     ctx.session.data.pendingText = text;
@@ -187,6 +232,85 @@ async function chat(ctx: Ctx, text: string) {
     { role: "user", content: text },
     { role: "assistant", content: reply },
   ]);
+}
+
+// ---------- Settings: name, headline and photo for the visuals ----------
+
+async function getProfile(userId: number): Promise<UserProfile> {
+  return (await getUser(userId))?.profile ?? {};
+}
+
+async function updateProfile(ctx: Ctx, changes: UserProfile) {
+  const user = await getUser(ctx.user.id);
+  await upsertUser(ctx.user.id, {
+    first_name: ctx.user.first_name,
+    profile: { ...user?.profile, ...changes },
+  });
+}
+
+async function showSettings(ctx: Ctx, messageId?: number) {
+  const profile = await getProfile(ctx.user.id);
+  const text = [
+    "Your profile. It goes on your carousels and quote cards.",
+    "",
+    `Name: ${profile.name ?? fullName(ctx.user)}`,
+    `Job title: ${profile.headline ?? "not set (e.g. Software Engineer at Acme)"}`,
+    `Photo: ${profile.photoFileId ? "✓ set" : "not set"}`,
+  ].join("\n");
+  const keyboard: ReplyMarkup = {
+    inline_keyboard: [
+      [
+        { text: "📷 Photo", callback_data: "set:photo" },
+        { text: "✏️ Name", callback_data: "set:name" },
+        { text: "✏️ Job title", callback_data: "set:headline" },
+      ],
+      [{ text: "Done ✓", callback_data: "set:done" }],
+    ],
+  };
+  if (messageId) await editMessage(ctx.chatId, messageId, text, keyboard);
+  else await sendMessage(ctx.chatId, text, keyboard);
+}
+
+async function receivePhoto(ctx: Ctx, fileId: string) {
+  if (ctx.session.step === "awaiting_photo") {
+    await updateProfile(ctx, { photoFileId: fileId });
+    await resetSession(ctx);
+    await sendMessage(ctx.chatId, "Looking good 📸 Your photo will be on your carousels and quote cards.");
+    await showSettings(ctx);
+    return;
+  }
+  ctx.session.data.pendingPhotoId = fileId;
+  await saveSession(ctx.user.id, ctx.session);
+  await sendMessage(ctx.chatId, "Nice photo. Want me to put it on your carousels and quote cards?", {
+    inline_keyboard: [
+      [
+        { text: "Yes, use it ✓", callback_data: "ph:yes" },
+        { text: "No", callback_data: "ph:no" },
+      ],
+    ],
+  });
+}
+
+async function saveProfileText(ctx: Ctx, text: string) {
+  const isName = ctx.session.step === "awaiting_name";
+  await updateProfile(ctx, isName ? { name: text.slice(0, 40) } : { headline: text.slice(0, 60) });
+  await resetSession(ctx);
+  await showSettings(ctx);
+}
+
+// The profile as the renderer needs it: the photo downloaded and inlined.
+async function visualProfile(ctx: Ctx): Promise<Profile> {
+  const profile = await getProfile(ctx.user.id);
+  let photo: string | undefined;
+  if (profile.photoFileId) {
+    try {
+      const bytes = await downloadFile(profile.photoFileId);
+      photo = `data:image/jpeg;base64,${Buffer.from(bytes).toString("base64")}`;
+    } catch (error) {
+      console.error("profile photo download failed", error);
+    }
+  }
+  return { name: profile.name ?? fullName(ctx.user), headline: profile.headline, photo };
 }
 
 // ---------- Story in: voice or text ----------
@@ -250,7 +374,7 @@ async function startFromText(ctx: Ctx, text: string) {
   const panel = await sendMessage(ctx.chatId, "Got it ✍️");
   ctx.session = { step: "idle", data: { postId: post.id, panelMessageId: panel.message_id } };
   await saveSession(ctx.user.id, ctx.session);
-  await showScreen(ctx, post, 0);
+  await showOptionsStart(ctx, post);
 }
 
 async function showTranscript(ctx: Ctx, transcript: string) {
@@ -291,25 +415,40 @@ async function savedPrefs(userId: number): Promise<Partial<PostOptions>> {
 }
 
 function postOptions(post: Post): PostOptions {
-  return { ...DEFAULT_OPTIONS, ...post.options };
+  return normalizeOptions(post.options);
+}
+
+// Returning users skip the screens: straight to the summary with last time's choices.
+async function showOptionsStart(ctx: Ctx, post: Post) {
+  const prefs = await savedPrefs(ctx.user.id);
+  if (Object.keys(prefs).length === 0) {
+    await showScreen(ctx, post, 0);
+    return;
+  }
+  const options = normalizeOptions(prefs);
+  await updatePost(post.id, { options });
+  await showSummary(ctx, { ...post, options }, true);
 }
 
 async function showScreen(ctx: Ctx, post: Post, screen: number) {
-  const prefs = await savedPrefs(ctx.user.id);
   // Pre-select whatever the user chose last time.
-  const options = { ...DEFAULT_OPTIONS, ...prefs, ...post.options };
+  const options = normalizeOptions({ ...(await savedPrefs(ctx.user.id)), ...post.options });
   await updatePost(post.id, { options });
-  const canRepeatLast = Object.keys(prefs).length > 0;
   await editMessage(
     ctx.chatId,
     ctx.session.data.panelMessageId!,
     screenText(screen, options),
-    screenKeyboard(screen, options, canRepeatLast),
+    screenKeyboard(screen, options),
   );
 }
 
-async function showSummary(ctx: Ctx, post: Post) {
-  await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, summaryText(postOptions(post)), summaryKeyboard);
+async function showSummary(ctx: Ctx, post: Post, fromLastTime = false) {
+  await editMessage(
+    ctx.chatId,
+    ctx.session.data.panelMessageId!,
+    summaryText(postOptions(post), fromLastTime),
+    summaryKeyboard,
+  );
 }
 
 // ---------- Generate and browse versions ----------
@@ -317,13 +456,18 @@ async function showSummary(ctx: Ctx, post: Post) {
 async function generate(ctx: Ctx, post: Post) {
   const panelId = ctx.session.data.panelMessageId!;
   const options = postOptions(post);
-  await editMessage(ctx.chatId, panelId, "Writing 3 versions for you… ✍️");
+  const stopProgress = startProgress(ctx.chatId, panelId, [
+    "Writing 3 versions for you… ✍️",
+    "Still writing, choosing the best words… ✍️",
+    "Almost there… ✍️",
+  ]);
 
   try {
-    const { variants, hooks, imagePrompt, costUsd } = await withTyping(ctx.chatId, () =>
+    const { variants, hooks, quote, imagePrompt, costUsd } = await withTyping(ctx.chatId, () =>
       generateVariants(post.transcript!, options, ctx.user.first_name),
     );
-    const meta = { ...post.meta, hooks, imagePrompt };
+    await stopProgress();
+    const meta = { ...post.meta, hooks, quote, imagePrompt };
     await updatePost(post.id, { variants, meta });
     await addPostCost(post.id, costUsd);
     await upsertUser(ctx.user.id, { first_name: ctx.user.first_name, prefs: options });
@@ -333,6 +477,7 @@ async function generate(ctx: Ctx, post: Post) {
     await saveSession(ctx.user.id, ctx.session);
     await showVariant(ctx, { ...post, variants, meta });
   } catch (error) {
+    await stopProgress();
     console.error("generate failed", error);
     if (error instanceof AiRefusal) {
       await editMessage(
@@ -402,7 +547,7 @@ async function showHooks(ctx: Ctx, post: Post) {
   });
 }
 
-// ---------- Final: post, score, carousel or image ----------
+// ---------- Final: post, score, first comment, visual ----------
 
 // Cut the preview at a word boundary, like LinkedIn does.
 function seeMorePreview(text: string) {
@@ -411,7 +556,7 @@ function seeMorePreview(text: string) {
   return `${cut.slice(0, cut.lastIndexOf(" "))}… see more`;
 }
 
-function statsText(text: string, score: number, tips: string[], hasVisual: boolean) {
+function statsText(text: string, score: number, tips: string[]) {
   const lines = [`${text.length.toLocaleString("en-US")} characters · Score ${score}/10`];
   if (tips.length) lines.push("", "To make it even better:", ...tips.map((tip) => `• ${tip}`));
   const preview = seeMorePreview(text);
@@ -419,40 +564,76 @@ function statsText(text: string, score: number, tips: string[], hasVisual: boole
   if (/https?:\/\/|www\./i.test(text)) {
     lines.push("", "⚠️ Move the link to the first comment. Posts with links get shown to fewer people.");
   }
-  if (!hasVisual) lines.push("", "Got another story? Just send a voice note.");
+  lines.push("", "💬 Your first comment is next. Post it right after publishing: early comments help the post travel.");
   return lines.join("\n");
 }
 
-async function finish(ctx: Ctx, post: Post, text: string) {
+const ADJUST_TEXT =
+  "Want to change anything? Tap below, or just tell me in your own words (e.g. “mention it was my first month”).";
+
+const adjustKeyboard: ReplyMarkup = {
+  inline_keyboard: [
+    [
+      { text: "✂️ Shorter", callback_data: "a:short" },
+      { text: "🔁 New ending", callback_data: "a:end" },
+    ],
+    [
+      { text: "🪝 Other hook", callback_data: "a:hook" },
+      { text: "😶 Fewer emoji", callback_data: "a:emoji" },
+    ],
+    [{ text: "All good, done ✓", callback_data: "a:done" }],
+  ],
+};
+
+type Visual =
+  | { kind: "carousel"; pdf: Uint8Array; cover: Buffer; slides: { title: string; body?: string }[]; costUsd: number }
+  | { kind: "quote"; png: Buffer; costUsd: number }
+  | { kind: "image"; png: Buffer; costUsd: number };
+
+function progressSteps(options: PostOptions, isAdjustment: boolean) {
+  if (isCarousel(options)) {
+    return ["Checking your post and writing the slides… ✍️", "Designing your slides… 🎨", "Building the PDF… 📄"];
+  }
+  if (options.visual === "Image" && !isAdjustment) {
+    return ["Painting your image… 🎨 (about 30 seconds)", "Still painting… 🎨", "Adding the last details… 🎨"];
+  }
+  return ["Checking your post… ✍️", "Almost there… ✍️"];
+}
+
+async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) {
   const panelId = ctx.session.data.panelMessageId!;
   const options = postOptions(post);
   ctx.session.data.chosenText = text;
   await saveSession(ctx.user.id, ctx.session);
 
-  const doing = isCarousel(options)
-    ? "Putting it together and designing your carousel… 🎨"
-    : options.visual === "Image"
-      ? "Putting it together and painting your image… 🎨 (about half a minute)"
-      : "Putting it together… ✍️";
-  await editMessage(ctx.chatId, panelId, doing);
-
+  const stopProgress = startProgress(ctx.chatId, panelId, progressSteps(options, isAdjustment), 8000);
   try {
-    const hook = post.meta.hooks?.includes(firstLine(text)) ? firstLine(text) : (post.meta.hooks?.[0] ?? firstLine(text));
+    const hooks = post.meta.hooks ?? [];
+    const hook = hooks.includes(firstLine(text)) ? firstLine(text) : (hooks[0] ?? firstLine(text));
     const [review, visual] = await withTyping(ctx.chatId, () =>
-      Promise.all([reviewPost(text), makeVisual(ctx, post, options, text, hook)]),
+      Promise.all([reviewPost(text, post.transcript!), makeVisual(ctx, post, options, text, hook, isAdjustment)]),
     );
+    await stopProgress();
 
-    await updatePost(post.id, {
-      final_text: text,
-      status: "done",
-      meta: { ...post.meta, score: review.score, tips: review.tips, slides: visual?.slides },
-    });
+    const meta = {
+      ...post.meta,
+      score: review.score,
+      tips: review.tips,
+      firstComment: review.firstComment,
+      ...(visual?.kind === "carousel" ? { slides: visual.slides } : {}),
+    };
+    await updatePost(post.id, { final_text: text, status: "done", meta });
     await addPostCost(post.id, review.costUsd + (visual?.costUsd ?? 0));
 
-    await editMessage(ctx.chatId, panelId, "✓ Done. Here's everything 👇");
-    // The post goes alone in its own message so it's easy to copy.
+    await editMessage(
+      ctx.chatId,
+      panelId,
+      isAdjustment ? "✓ Updated. Here's the new version 👇" : "✓ Done. Here's everything 👇",
+    );
+    // The post and the comment go alone in their own messages so they're easy to copy.
     await sendMessage(ctx.chatId, text);
-    await sendMessage(ctx.chatId, statsText(text, review.score, review.tips, Boolean(visual)));
+    await sendMessage(ctx.chatId, statsText(text, review.score, review.tips));
+    await sendMessage(ctx.chatId, review.firstComment);
 
     if (visual?.kind === "carousel") {
       await sendPhoto(ctx.chatId, visual.cover, "Carousel cover 👆 The full carousel is the PDF below.");
@@ -460,26 +641,34 @@ async function finish(ctx: Ctx, post: Post, text: string) {
         ctx.chatId,
         visual.pdf,
         "carousel.pdf",
-        "On LinkedIn: start a post → + → Add a document → upload this PDF and give it a title.\n\nGot another story? Just send a voice note.",
+        `On LinkedIn: start a post → + → Add a document → upload this PDF. Title idea: "${hook}"`,
       );
+    } else if (visual?.kind === "quote") {
+      await sendPhoto(ctx.chatId, visual.png, "Your quote card. Add it to the post on LinkedIn as an image.");
     } else if (visual?.kind === "image") {
       await sendPhoto(
         ctx.chatId,
         visual.png,
-        "Your image. Add it to the post on LinkedIn.\n\nGot another story? Just send a voice note.",
+        "Your image. Add it to the post on LinkedIn.",
         anotherImageKeyboard(post.id),
       );
+    } else if (isAdjustment && options.visual === "Image") {
+      await sendMessage(ctx.chatId, "Your image above stays the same.");
     }
-    await resetSession(ctx);
+
+    // The adjustment buttons become the new panel; free text now means "change this".
+    const panel = await sendMessage(ctx.chatId, ADJUST_TEXT, adjustKeyboard);
+    ctx.session = {
+      step: "adjusting",
+      data: { postId: post.id, panelMessageId: panel.message_id, chosenText: text, hookTries: ctx.session.data.hookTries },
+    };
+    await saveSession(ctx.user.id, ctx.session);
   } catch (error) {
+    await stopProgress();
     console.error("finish failed", error);
     await offerRetry(ctx, "finish");
   }
 }
-
-type Visual =
-  | { kind: "carousel"; pdf: Uint8Array; cover: Buffer; slides: { title: string; body?: string }[]; costUsd: number }
-  | { kind: "image"; png: Buffer; slides?: undefined; costUsd: number };
 
 async function makeVisual(
   ctx: Ctx,
@@ -487,13 +676,23 @@ async function makeVisual(
   options: PostOptions,
   text: string,
   hook: string,
+  isAdjustment: boolean,
 ): Promise<Visual | null> {
   if (isCarousel(options)) {
-    const { slides, costUsd } = await generateSlides(text, hook, post.transcript!, options, ctx.user.first_name);
-    const { pdf, cover } = await buildCarousel(slides, options.style as CarouselStyle, fullName(ctx.user), hook);
+    const [{ slides, costUsd }, profile] = await Promise.all([
+      generateSlides(text, hook, post.transcript!, options, ctx.user.first_name),
+      visualProfile(ctx),
+    ]);
+    const { pdf, cover } = await buildCarousel(slides, options.style as CarouselStyle, profile, hook);
     return { kind: "carousel", pdf, cover, slides, costUsd };
   }
-  if (options.visual === "Image" && post.meta.imagePrompt) {
+  if (options.visual === "Quote card") {
+    const quote = post.meta.quote ?? hook;
+    const png = await renderQuoteCard(quote, options.style as CarouselStyle, await visualProfile(ctx));
+    return { kind: "quote", png, costUsd: 0 };
+  }
+  // The image doesn't depend on the exact wording, so text tweaks keep it.
+  if (options.visual === "Image" && post.meta.imagePrompt && !isAdjustment) {
     const { png, costUsd } = await generateImage(post.meta.imagePrompt);
     return { kind: "image", png, costUsd };
   }
@@ -516,6 +715,48 @@ async function anotherImage(ctx: Ctx, postId: string) {
     console.error("another image failed", error);
     await sendMessage(ctx.chatId, "Couldn't paint that one. Tap the button again in a moment?");
   }
+}
+
+// ---------- Adjustments ----------
+
+const ADJUST_INSTRUCTIONS: Record<string, string> = {
+  short: "Make it noticeably shorter, about 30% shorter. Keep the first line, the ending and the hashtags.",
+  end: "Rewrite only the closing lines before the hashtags with a different, stronger ending. Keep the same kind of ending (question, follow invitation, or plain lesson).",
+  emoji: "Remove most emoji. Keep at most one, only if it truly fits.",
+};
+
+async function adjust(ctx: Ctx, instruction: string) {
+  const postId = ctx.session.data.postId;
+  const current = ctx.session.data.chosenText;
+  const post = postId ? await getPost(postId) : null;
+  if (!post || !current) {
+    await resetSession(ctx);
+    await chat(ctx, instruction);
+    return;
+  }
+  await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, "On it… ✍️");
+  try {
+    const { text, costUsd } = await withTyping(ctx.chatId, () =>
+      revisePost(current, instruction, post.transcript!),
+    );
+    await addPostCost(post.id, costUsd);
+    await finish(ctx, post, text, true);
+  } catch (error) {
+    console.error("adjust failed", error);
+    await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, `${ERROR_TEXT}\n\n${ADJUST_TEXT}`, adjustKeyboard);
+  }
+}
+
+async function otherHook(ctx: Ctx, post: Post) {
+  const current = ctx.session.data.chosenText!;
+  const hooks = (post.meta.hooks ?? []).filter((hook) => hook !== firstLine(current));
+  if (hooks.length === 0) {
+    await adjust(ctx, "Write a different, stronger first line (hook). Change nothing else.");
+    return;
+  }
+  const tries = ctx.session.data.hookTries ?? 0;
+  ctx.session.data.hookTries = tries + 1;
+  await finish(ctx, post, applyHook(current, hooks[tries % hooks.length]), true);
 }
 
 // ---------- Errors ----------
@@ -555,6 +796,42 @@ async function handleCallback(query: TgCallbackQuery) {
     return;
   }
 
+  // Settings buttons.
+  if (data.startsWith("set:")) {
+    await answerCallback(query.id);
+    const what = data.slice(4);
+    if (what === "done") {
+      await editMessage(ctx.chatId, message.message_id, "Saved ✓ Send me a voice note whenever you have a story.");
+      return;
+    }
+    const prompts: Record<string, [Session["step"], string]> = {
+      photo: ["awaiting_photo", "Send me a photo of you. A clear, friendly headshot works best 📸"],
+      name: ["awaiting_name", "What name should go on your visuals?"],
+      headline: ["awaiting_headline", "What's your job title? (e.g. Software Engineer at Acme)"],
+    };
+    const prompt = prompts[what];
+    if (!prompt) return;
+    ctx.session = { step: prompt[0], data: {} };
+    await saveSession(ctx.user.id, ctx.session);
+    await editMessage(ctx.chatId, message.message_id, prompt[1]);
+    return;
+  }
+
+  // "Use this photo?" after a photo sent outside /settings.
+  if (data === "ph:yes" || data === "ph:no") {
+    await answerCallback(query.id);
+    const fileId = ctx.session.data.pendingPhotoId;
+    ctx.session.data.pendingPhotoId = undefined;
+    await saveSession(ctx.user.id, ctx.session);
+    if (data === "ph:yes" && fileId) {
+      await updateProfile(ctx, { photoFileId: fileId });
+      await editMessage(ctx.chatId, message.message_id, "Done 📸 Your photo will be on your carousels and quote cards.");
+    } else {
+      await editMessage(ctx.chatId, message.message_id, "Okay, I won't use it.");
+    }
+    return;
+  }
+
   // "Another image" lives under a finished post, not on the panel.
   if (data.startsWith("img:")) {
     await answerCallback(query.id, "Painting a new one… 🎨");
@@ -572,7 +849,7 @@ async function handleCallback(query: TgCallbackQuery) {
   await answerCallback(query.id);
 
   if (data === "ok") {
-    await showScreen(ctx, post, 0);
+    await showOptionsStart(ctx, post);
   } else if (data === "fix") {
     ctx.session.step = "awaiting_correction";
     await saveSession(ctx.user.id, ctx.session);
@@ -589,10 +866,6 @@ async function handleCallback(query: TgCallbackQuery) {
     if (screen >= 0 && screen < SCREEN_COUNT) await showScreen(ctx, post, screen);
   } else if (data === "sum") {
     await showSummary(ctx, post);
-  } else if (data === "fast") {
-    const options = { ...DEFAULT_OPTIONS, ...(await savedPrefs(ctx.user.id)) };
-    await updatePost(post.id, { options });
-    await generate(ctx, { ...post, options });
   } else if (data === "gen") {
     await generate(ctx, post);
   } else if (data.startsWith("v:") && post.variants) {
@@ -605,6 +878,16 @@ async function handleCallback(query: TgCallbackQuery) {
     const variant = post.variants[ctx.session.data.variantIndex ?? 0];
     const hook = data === "h:k" ? null : post.meta.hooks?.[Number(data.slice(2))];
     await finish(ctx, post, hook ? applyHook(variant.text, hook) : variant.text);
+  } else if (data.startsWith("a:") && ctx.session.step === "adjusting") {
+    const action = data.slice(2);
+    if (action === "done") {
+      await editMessage(ctx.chatId, message.message_id, "Saved ✓ Good luck with the post! Send me a voice note whenever you have another story.");
+      await resetSession(ctx);
+    } else if (action === "hook") {
+      await otherHook(ctx, post);
+    } else if (ADJUST_INSTRUCTIONS[action]) {
+      await adjust(ctx, ADJUST_INSTRUCTIONS[action]);
+    }
   } else if (data === "retry") {
     const retry = ctx.session.data.retry;
     if (retry === "transcribe") {
@@ -613,7 +896,7 @@ async function handleCallback(query: TgCallbackQuery) {
     } else if (retry === "generate") {
       await generate(ctx, post);
     } else if (retry === "finish" && ctx.session.data.chosenText) {
-      await finish(ctx, post, ctx.session.data.chosenText);
+      await finish(ctx, post, ctx.session.data.chosenText, ctx.session.step === "adjusting");
     }
   }
 }

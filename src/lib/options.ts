@@ -44,17 +44,27 @@ export const QUESTIONS = [
     screen: 1,
     label: "Visual",
     choices: [
-      { code: "5", label: "5 slides" },
-      { code: "8", label: "8 slides" },
+      { code: "c", label: "Carousel" },
+      { code: "q", label: "Quote card" },
       { code: "i", label: "Image" },
       { code: "n", label: "None" },
+    ],
+  },
+  {
+    key: "slides",
+    code: "k",
+    screen: 1,
+    label: "Number of slides",
+    choices: [
+      { code: "5", label: "5 slides" },
+      { code: "8", label: "8 slides" },
     ],
   },
   {
     key: "style",
     code: "s",
     screen: 1,
-    label: "Carousel style",
+    label: "Style",
     choices: [
       { code: "m", label: "Minimal" },
       { code: "c", label: "Colorful" },
@@ -104,7 +114,8 @@ export const DEFAULT_OPTIONS: PostOptions = {
   tone: "Serious",
   length: "Medium",
   audience: "Colleagues",
-  visual: "5 slides",
+  visual: "Carousel",
+  slides: "5 slides",
   style: "Minimal",
   structure: "Story",
   emoji: "A few",
@@ -115,18 +126,31 @@ const SCREEN_TITLES = ["The text", "The visual", "Finishing touches"];
 export const SCREEN_COUNT = SCREEN_TITLES.length;
 
 export function isCarousel(options: PostOptions) {
-  return options.visual === "5 slides" || options.visual === "8 slides";
+  return options.visual === "Carousel";
 }
 
 export function slideCount(options: PostOptions) {
-  return options.visual === "8 slides" ? 8 : 5;
+  return options.slides === "8 slides" ? 8 : 5;
 }
 
-// Questions shown on a screen. Style and structure only matter for a carousel.
+// Fills in defaults and upgrades options saved by older versions of the bot.
+export function normalizeOptions(saved: Record<string, unknown> | null | undefined): PostOptions {
+  const options = { ...DEFAULT_OPTIONS, ...saved } as PostOptions;
+  const legacyVisual = saved?.visual;
+  if (legacyVisual === "5 slides" || legacyVisual === "8 slides") {
+    return { ...options, slides: legacyVisual, visual: "Carousel" };
+  }
+  return options;
+}
+
+// Questions shown on a screen. Slides and structure only matter for a carousel; style also for a quote card.
 function screenQuestions(screen: number, options: PostOptions) {
-  return QUESTIONS.filter(
-    (q) => q.screen === screen && (isCarousel(options) || (q.key !== "style" && q.key !== "structure")),
-  );
+  return QUESTIONS.filter((q) => {
+    if (q.screen !== screen) return false;
+    if (q.key === "slides" || q.key === "structure") return isCarousel(options);
+    if (q.key === "style") return isCarousel(options) || options.visual === "Quote card";
+    return true;
+  });
 }
 
 // Applies a tap like "o:t:f" (tone = Funny). Returns the new options and the screen to redraw.
@@ -147,14 +171,14 @@ export function screenText(screen: number, options: PostOptions) {
     "",
     ...screenQuestions(screen, options).map((q, i) => `${i + 1}. ${q.label}`),
   ];
-  if (screen === 1 && !isCarousel(options)) {
-    lines.push("", "Tip: a carousel (PDF) usually gets the most attention on LinkedIn.");
+  if (screen === 1) {
+    lines.push("", "Tip: a carousel (PDF) usually gets the most attention on LinkedIn. A quote card is quick and personal.");
   }
   lines.push("", "Tap to change.");
   return lines.join("\n");
 }
 
-export function screenKeyboard(screen: number, options: PostOptions, canRepeatLast: boolean): ReplyMarkup {
+export function screenKeyboard(screen: number, options: PostOptions): ReplyMarkup {
   const rows: Button[][] = screenQuestions(screen, options).map((question) =>
     question.choices.map((choice) => ({
       text: options[question.key] === choice.label ? `✓ ${choice.label}` : choice.label,
@@ -170,20 +194,18 @@ export function screenKeyboard(screen: number, options: PostOptions, canRepeatLa
       : { text: "Next ▶", callback_data: "sum" },
   );
   rows.push(nav);
-  if (screen === 0 && canRepeatLast) {
-    rows.push([{ text: "⚡ Same as last time", callback_data: "fast" }]);
-  }
   return { inline_keyboard: rows };
 }
 
 export function describeVisual(options: PostOptions) {
-  if (isCarousel(options)) return `Carousel, ${options.visual} · ${options.style} · ${options.structure}`;
+  if (isCarousel(options)) return `Carousel, ${options.slides} · ${options.style} · ${options.structure}`;
+  if (options.visual === "Quote card") return `Quote card · ${options.style}`;
   return options.visual === "Image" ? "AI image" : "None";
 }
 
-export function summaryText(options: PostOptions) {
+export function summaryText(options: PostOptions, fromLastTime: boolean) {
   return [
-    "Here's the plan:",
+    fromLastTime ? "Same as last time? Here's the plan:" : "Here's the plan:",
     "",
     `Tone: ${options.tone}`,
     `Length: ${options.length}`,

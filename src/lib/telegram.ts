@@ -31,6 +31,8 @@ export type TgMessage = {
   caption?: string;
   voice?: TgAudioFile;
   audio?: TgAudioFile;
+  // Same photo in several sizes, smallest first.
+  photo?: { file_id: string; width: number; height: number }[];
   forward_origin?: unknown;
 };
 

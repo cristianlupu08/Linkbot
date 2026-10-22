@@ -28,11 +28,15 @@ export async function markUpdateProcessed(updateId: number): Promise<boolean> {
 
 // ---------- Users ----------
 
+// What goes on the user's carousels and quote cards (set in /settings).
+export type UserProfile = { name?: string; headline?: string; photoFileId?: string };
+
 export type User = {
   telegram_id: number;
   first_name: string | null;
   approved: boolean;
   prefs: Partial<PostOptions>;
+  profile: UserProfile | null;
 };
 
 export async function getUser(telegramId: number): Promise<User | null> {
@@ -45,7 +49,15 @@ export async function upsertUser(telegramId: number, fields: Partial<Omit<User, 
 
 // ---------- Sessions (conversation state) ----------
 
-export type Step = "idle" | "awaiting_story" | "awaiting_correction";
+export type Step =
+  | "idle"
+  | "awaiting_story"
+  | "awaiting_correction"
+  | "awaiting_photo"
+  | "awaiting_name"
+  | "awaiting_headline"
+  // After the final post: free text is an edit instruction.
+  | "adjusting";
 
 export type SessionData = {
   postId?: string;
@@ -61,6 +73,10 @@ export type SessionData = {
   chosenText?: string;
   // A long text we asked about: "make it a post or just chatting?"
   pendingText?: string;
+  // A photo sent outside /settings: "use it on your carousels?"
+  pendingPhotoId?: string;
+  // How many alternative hooks we've already tried with [Other hook].
+  hookTries?: number;
 };
 
 export type Session = { step: Step; data: SessionData };
@@ -114,7 +130,9 @@ export type Variant = { label: string; text: string };
 // Everything generated after the variants, kept for the final message and later steps.
 export type PostMeta = {
   hooks?: string[];
+  quote?: string;
   imagePrompt?: string;
+  firstComment?: string;
   slides?: { title: string; body?: string }[];
   score?: number;
   tips?: string[];

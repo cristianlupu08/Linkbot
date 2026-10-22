@@ -7,6 +7,7 @@ create table if not exists users (
   first_name text,
   approved boolean not null default false,
   prefs jsonb not null default '{}'::jsonb, -- last chosen options, pre-selected next time
+  profile jsonb, -- name, headline, photo for carousels (set in /settings)
   created_at timestamptz not null default now()
 );
 
@@ -49,8 +50,9 @@ create table if not exists posts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
--- Added in stage 3 (for databases created before it).
+-- Added later (for databases created before these columns existed).
 alter table posts add column if not exists meta jsonb not null default '{}'::jsonb;
+alter table users add column if not exists profile jsonb;
 create index if not exists posts_user_idx on posts (telegram_id, created_at desc);
 
 alter table users enable row level security;

@@ -64,6 +64,7 @@ What you do:
 - If the user just says hi or makes small talk, answer naturally, like a friend would. When it fits, get curious about what's been happening at their work lately, because that's where post ideas come from. Don't push it every message.
 - If they ask what you can do: they send a voice note (or type) telling a story, you write the LinkedIn post, plus a PDF carousel or an image to go with it. You never post anything on LinkedIn yourself; you only prepare it.
 - When they want to make a post, tell them to just send a voice note with the story, or type /new and write it out.
+- /settings is where they add their photo, name and job title for the carousels and quote cards.
 - If they start telling a story in the chat, react to it genuinely and suggest sending it as a voice note (or with /new) so you can turn it into a post.
 - Never invent facts about the user.`;
 
@@ -109,6 +110,7 @@ Write three versions:
 
 Also write:
 - hooks: 5 alternative first lines for the post. Ideally under 8 words. Curiosity, or the opposite of what you'd expect. Each must be true to the story.
+- quote: the single most quotable line of the story for a quote card, under 20 words. Ideally the person's own words, lightly tightened. No hashtags, no emoji.
 - imagePrompt: a description for an AI image to go with the post. A single striking scene or metaphor from the story, described visually (setting, light, mood, composition), photographic or editorial-illustration style. Don't show the storyteller's face or make them a specific person (the image must not misrepresent who they are): focus on the setting, objects, hands, or a figure seen from behind or far away. The image must contain no text, letters, numbers, logos, or readable screens.`;
 
 const LENGTH_GUIDE: Record<PostOptions["length"], string> = {
@@ -137,7 +139,7 @@ export async function generateVariants(
   transcript: string,
   options: PostOptions,
   firstName: string,
-): Promise<{ variants: Variant[]; hooks: string[]; imagePrompt: string; costUsd: number }> {
+): Promise<{ variants: Variant[]; hooks: string[]; quote: string; imagePrompt: string; costUsd: number }> {
   const request = [
     `Tone: ${options.tone}.`,
     `Length of the direct and personal versions: ${LENGTH_GUIDE[options.length]}.`,
@@ -151,7 +153,11 @@ export async function generateVariants(
     "</story>",
   ].join("\n");
 
-  type Result = Record<keyof typeof VARIANT_LABELS, string> & { hooks: string[]; imagePrompt: string };
+  type Result = Record<keyof typeof VARIANT_LABELS, string> & {
+    hooks: string[];
+    quote: string;
+    imagePrompt: string;
+  };
   const { data, costUsd } = await askJson<Result>(
     POST_SYSTEM,
     request,
@@ -162,9 +168,10 @@ export async function generateVariants(
         personal: { type: "string" },
         short: { type: "string" },
         hooks: stringArray,
+        quote: { type: "string" },
         imagePrompt: { type: "string" },
       },
-      required: ["direct", "personal", "short", "hooks", "imagePrompt"],
+      required: ["direct", "personal", "short", "hooks", "quote", "imagePrompt"],
       additionalProperties: false,
     },
     "medium",
@@ -177,6 +184,7 @@ export async function generateVariants(
   return {
     variants,
     hooks: data.hooks.map((hook) => hook.trim()).filter(Boolean).slice(0, 5),
+    quote: data.quote.trim(),
     imagePrompt: data.imagePrompt.trim(),
     costUsd,
   };
@@ -261,20 +269,25 @@ export async function generateSlides(
   return { slides, costUsd };
 }
 
-// ---------- Score ----------
+// ---------- Score and first comment ----------
 
 const REVIEW_SYSTEM = `You are a blunt, kind LinkedIn editor. Rate a post from 1 to 10 for how well it will do on LinkedIn: hook strength, concreteness, readability on a phone, authenticity (does it sound like a real person, not AI), and the ending.
 
-Be honest: 9-10 is rare. Give 1 or 2 tips, each one short, specific and actionable for this exact post (quote the part you mean). No generic advice. If it's already strong, one tip is enough.`;
+Be honest: 9-10 is rare. Give 1 or 2 tips, each one short, specific and actionable for this exact post (quote the part you mean). No generic advice. If it's already strong, one tip is enough.
 
-export async function reviewPost(post: string): Promise<{ score: number; tips: string[]; costUsd: number }> {
-  const { data, costUsd } = await askJson<{ score: number; tips: string[] }>(
+Also write firstComment: the comment the author should post under their own post right after publishing, to get the conversation going. One to three short sentences, in the author's voice, adding a small extra detail or angle from the story (never invented) or asking readers something specific. If the story mentions a link or resource, put it here. Plain text, at most one emoji.`;
+
+export async function reviewPost(
+  post: string,
+  transcript: string,
+): Promise<{ score: number; tips: string[]; firstComment: string; costUsd: number }> {
+  const { data, costUsd } = await askJson<{ score: number; tips: string[]; firstComment: string }>(
     REVIEW_SYSTEM,
-    `<post>\n${post}\n</post>`,
+    `<post>\n${post}\n</post>\n\nThe original story, for the first comment:\n<story>\n${transcript}\n</story>`,
     {
       type: "object",
-      properties: { score: { type: "integer" }, tips: stringArray },
-      required: ["score", "tips"],
+      properties: { score: { type: "integer" }, tips: stringArray, firstComment: { type: "string" } },
+      required: ["score", "tips", "firstComment"],
       additionalProperties: false,
     },
     "low",
@@ -282,6 +295,47 @@ export async function reviewPost(post: string): Promise<{ score: number; tips: s
   return {
     score: Math.min(10, Math.max(1, Math.round(data.score))),
     tips: data.tips.slice(0, 2),
+    firstComment: data.firstComment.trim(),
     costUsd,
   };
+}
+
+// ---------- Adjustments after the final post ----------
+
+const REVISE_SYSTEM = `You edit a LinkedIn post on request. Change only what the instruction asks for and keep everything else exactly as it is: same words, same line breaks, same hashtags.
+
+Rules:
+${NO_INVENTION}
+- If the instruction asks for a fact that isn't in the story (e.g. "add a number"), use only facts from the story; if there is none, make the smallest change that honors the spirit of the request without inventing.
+- No em dashes. Plain text, no markdown.
+- Return the full revised post.`;
+
+export async function revisePost(
+  post: string,
+  instruction: string,
+  transcript: string,
+): Promise<{ text: string; costUsd: number }> {
+  const { data, costUsd } = await askJson<{ post: string }>(
+    REVISE_SYSTEM,
+    [
+      `Instruction: ${instruction}`,
+      "",
+      "<post>",
+      post,
+      "</post>",
+      "",
+      "The original story (the only source of facts):",
+      "<story>",
+      transcript,
+      "</story>",
+    ].join("\n"),
+    {
+      type: "object",
+      properties: { post: { type: "string" } },
+      required: ["post"],
+      additionalProperties: false,
+    },
+    "low",
+  );
+  return { text: data.post.trim(), costUsd };
 }
