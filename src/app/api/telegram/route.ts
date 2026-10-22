@@ -29,7 +29,7 @@ export async function POST(request: Request) {
       console.error("handleUpdate failed", update.update_id, error);
       const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id;
       if (chatId) {
-        await sendMessage(chatId, "Something didn't work on my side. Try that again in a moment?").catch(
+        await sendMessage(chatId, "Something went wrong. Please try again.").catch(
           () => {},
         );
       }

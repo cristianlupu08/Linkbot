@@ -85,7 +85,7 @@ function welcome(firstName: string) {
   return [
     `Welcome back, ${firstName}.`,
     "",
-    "Send a voice note when you have a story from work. For a starting point, use /ideas.",
+    "Send a voice note when you have a story worth sharing. For a starting point, use /ideas.",
   ].join("\n");
 }
 
@@ -104,7 +104,7 @@ const ONBOARDING_PHOTO = "A headshot for your carousel covers. Send a photo, or 
 const ALL_SET = [
   "Setup complete.",
   "",
-  "Send a voice note about something that happened at work: a decision, a mistake, a result. One to three minutes works best.",
+  "Send a voice note about something that happened to you: at work, in sport, on a trip, at home. A decision, a mistake, a lesson. One to three minutes works best.",
   "",
   "Need a starting point? Use /ideas.",
   "",
@@ -128,7 +128,7 @@ const FIRST_POST_TIPS = [
 const HELP = [
   "How it works",
   "",
-  "1. Send a voice note with a story from work, or use /new to type it.",
+  "1. Send a voice note with a story (work, life, anything you learned from), or use /new to type it.",
   "2. Confirm the transcript and answer a few quick questions about the story.",
   "3. Choose tone, length and ending. Your choices are remembered.",
   "4. Pick one of 3 versions and the opening line, then the visual: carousel, your own photo, a generated image, or a quote card.",
