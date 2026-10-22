@@ -80,9 +80,47 @@ function welcome(firstName: string) {
     "",
     "Just hit the mic and tell me like you'd tell a friend. I'll turn it into a LinkedIn post, with a carousel, a quote card or an image, and you decide if it ever goes out.",
     "",
-    "Tip: send /settings once to add your photo and job title. They'll show up on your carousels.",
+    "Everything else is in the Menu button, bottom left.",
   ].join("\n");
 }
+
+function onboardingIntro(firstName: string) {
+  return [
+    `Hey ${firstName} 👋 I'm LinkBot.`,
+    "",
+    "You tell me a story from work in a voice note. I turn it into a LinkedIn post, plus a carousel, a quote card or an image to go with it. I never post anything for you.",
+    "",
+    "Quick setup first, 2 questions, 30 seconds.",
+    "",
+    "1/2 · What's your job title? It goes on your carousels. (e.g. Software Engineer at Acme)",
+  ].join("\n");
+}
+
+const ONBOARDING_PHOTO =
+  "2/2 · Now a photo of you. A clear, friendly headshot works best 📸 It goes on the cover of your carousels.";
+
+const ALL_SET = [
+  "You're all set ✓",
+  "",
+  "Now the fun part: hit the mic 🎙️ and tell me something that happened at work lately. A win, a mistake, a weird day. 1 to 3 minutes is perfect.",
+  "",
+  "No story in mind? Send /ideas and I'll ask you 3 questions.",
+  "",
+  "Everything else (history, banner, settings, help) is in the Menu button, bottom left.",
+].join("\n");
+
+const skipKeyboard: ReplyMarkup = { inline_keyboard: [[{ text: "Skip", callback_data: "ob:skip" }]] };
+
+const FIRST_POST_TIPS = [
+  "💡 Your first post is done! A few things you might like:",
+  "",
+  "• /ideas: no story in mind? I'll ask you 3 questions.",
+  "• /history: your last posts, ready to send again.",
+  "• /banner: a LinkedIn profile banner in your style.",
+  "• /settings: change your photo, name or job title.",
+  "",
+  "They're all in the Menu button, bottom left.",
+].join("\n");
 
 const HELP = [
   "How it works:",
@@ -165,8 +203,16 @@ async function handleMessage(message: TgMessage, user: TgUser) {
   const ctx: Ctx = { chatId, user, session: await getSession(user.id) };
 
   if (/^\/start\b/.test(text)) {
-    await resetSession(ctx);
-    await sendMessage(chatId, welcome(user.first_name));
+    const profile = await getProfile(user.id);
+    if (profile.onboarded) {
+      await resetSession(ctx);
+      await sendMessage(chatId, welcome(user.first_name));
+      return;
+    }
+    // First time: a short guided setup so nobody has to discover /settings on their own.
+    ctx.session = { step: "awaiting_headline", data: { onboarding: true } };
+    await saveSession(user.id, ctx.session);
+    await sendMessage(chatId, onboardingIntro(user.first_name), skipKeyboard);
     return;
   }
   if (/^\/new\b/.test(text)) {
@@ -308,10 +354,12 @@ async function showSettings(ctx: Ctx, messageId?: number) {
 
 async function receivePhoto(ctx: Ctx, fileId: string) {
   if (ctx.session.step === "awaiting_photo") {
+    const onboarding = ctx.session.data.onboarding;
     await updateProfile(ctx, { photoFileId: fileId });
     await resetSession(ctx);
     await sendMessage(ctx.chatId, "Looking good 📸 Your photo will be on your carousels and quote cards.");
-    await showSettings(ctx);
+    if (onboarding) await finishOnboarding(ctx);
+    else await showSettings(ctx);
     return;
   }
   ctx.session.data.pendingPhotoId = fileId;
@@ -329,8 +377,24 @@ async function receivePhoto(ctx: Ctx, fileId: string) {
 async function saveProfileText(ctx: Ctx, text: string) {
   const isName = ctx.session.step === "awaiting_name";
   await updateProfile(ctx, isName ? { name: text.slice(0, 40) } : { headline: text.slice(0, 60) });
+  if (ctx.session.data.onboarding) {
+    await askOnboardingPhoto(ctx);
+    return;
+  }
   await resetSession(ctx);
   await showSettings(ctx);
+}
+
+async function askOnboardingPhoto(ctx: Ctx) {
+  ctx.session = { step: "awaiting_photo", data: { onboarding: true } };
+  await saveSession(ctx.user.id, ctx.session);
+  await sendMessage(ctx.chatId, ONBOARDING_PHOTO, skipKeyboard);
+}
+
+async function finishOnboarding(ctx: Ctx) {
+  await updateProfile(ctx, { onboarded: true });
+  await resetSession(ctx);
+  await sendMessage(ctx.chatId, ALL_SET);
 }
 
 // The profile as the renderer needs it: the photo downloaded and inlined.
@@ -726,6 +790,12 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
       data: { postId: post.id, panelMessageId: panel.message_id, chosenText: text, hookTries: ctx.session.data.hookTries },
     };
     await saveSession(ctx.user.id, ctx.session);
+
+    // After the very first post, point out the features nobody would find on their own.
+    if (!isAdjustment && !(await getProfile(ctx.user.id)).tipsShown) {
+      await updateProfile(ctx, { tipsShown: true });
+      await sendMessage(ctx.chatId, FIRST_POST_TIPS);
+    }
   } catch (error) {
     await stopProgress();
     console.error("finish failed", error);
@@ -994,6 +1064,15 @@ async function handleCallback(query: TgCallbackQuery) {
     } else {
       await editMessage(ctx.chatId, message.message_id, "Okay, I won't use it.");
     }
+    return;
+  }
+
+  // "Skip" during the first-time setup.
+  if (data === "ob:skip") {
+    await answerCallback(query.id);
+    await editMessage(ctx.chatId, message.message_id, `${message.text ?? ""}\n\n(skipped, you can add it later in /settings)`);
+    if (ctx.session.step === "awaiting_headline") await askOnboardingPhoto(ctx);
+    else await finishOnboarding(ctx);
     return;
   }
 

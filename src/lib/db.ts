@@ -29,7 +29,15 @@ export async function markUpdateProcessed(updateId: number): Promise<boolean> {
 // ---------- Users ----------
 
 // What goes on the user's carousels and quote cards (set in /settings).
-export type UserProfile = { name?: string; headline?: string; photoFileId?: string };
+export type UserProfile = {
+  name?: string;
+  headline?: string;
+  photoFileId?: string;
+  // Set once the first-time setup is finished (or skipped), so /start doesn't repeat it.
+  onboarded?: boolean;
+  // Set once we've shown the "did you know" tips after the first post.
+  tipsShown?: boolean;
+};
 
 export type User = {
   telegram_id: number;
@@ -80,6 +88,8 @@ export type SessionData = {
   hookTries?: number;
   // Banner lines we suggested, so a button can pick one.
   bannerOptions?: string[];
+  // First-time setup after /start: job title, then photo.
+  onboarding?: boolean;
 };
 
 export type Session = { step: Step; data: SessionData };
