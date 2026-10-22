@@ -50,10 +50,10 @@ await api("setMyCommands", {
 // What people see before they tap Start, and in the bot's profile.
 await api("setMyDescription", {
   description:
-    "Tell me a story from work in a voice note. I'll turn it into a LinkedIn post that sounds like you, plus a carousel (PDF), a quote card or an image.\n\nI never post anything for you. Tap Start and I'll set you up in 30 seconds.",
+    "Turn voice notes into ready-to-publish LinkedIn posts, with a matching carousel (PDF), quote card or image.\n\nNothing is ever posted on your behalf.",
 });
 await api("setMyShortDescription", {
-  short_description: "Voice note in, LinkedIn post out. With carousels, quote cards and images.",
+  short_description: "Voice notes into ready-to-publish LinkedIn posts.",
 });
 
 console.log("getWebhookInfo:", (await api("getWebhookInfo")).result);

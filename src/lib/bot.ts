@@ -74,52 +74,41 @@ type Ctx = { chatId: number; user: TgUser; session: Session };
 
 function welcome(firstName: string) {
   return [
-    `Hey ${firstName} 👋`,
+    `Welcome back, ${firstName}.`,
     "",
-    "Got something from work lately you keep thinking about? A win, a mess-up, a weird day?",
-    "",
-    "Just hit the mic and tell me like you'd tell a friend. I'll turn it into a LinkedIn post, with a carousel, a quote card or an image, and you decide if it ever goes out.",
-    "",
-    "Everything else is in the Menu button, bottom left.",
+    "Send a voice note when you have a story from work. For a starting point, use /ideas.",
   ].join("\n");
 }
 
 function onboardingIntro(firstName: string) {
   return [
-    `Hey ${firstName} 👋 I'm LinkBot.`,
+    `Hi ${firstName}. LinkBot turns your voice notes into ready-to-publish LinkedIn posts, with a matching carousel, quote card or image. Nothing is ever posted on your behalf.`,
     "",
-    "You tell me a story from work in a voice note. I turn it into a LinkedIn post, plus a carousel, a quote card or an image to go with it. I never post anything for you.",
+    "Two details for your visuals before we start.",
     "",
-    "Quick setup first, 2 questions, 30 seconds.",
-    "",
-    "1/2 · What's your job title? It goes on your carousels. (e.g. Software Engineer at Acme)",
+    "Your job title? (e.g. Product Designer at Acme)",
   ].join("\n");
 }
 
-const ONBOARDING_PHOTO =
-  "2/2 · Now a photo of you. A clear, friendly headshot works best 📸 It goes on the cover of your carousels.";
+const ONBOARDING_PHOTO = "A headshot for your carousel covers. Send a photo, or skip for now.";
 
 const ALL_SET = [
-  "You're all set ✓",
+  "Setup complete.",
   "",
-  "Now the fun part: hit the mic 🎙️ and tell me something that happened at work lately. A win, a mistake, a weird day. 1 to 3 minutes is perfect.",
+  "Send a voice note about something that happened at work: a decision, a mistake, a result. One to three minutes works best.",
   "",
-  "No story in mind? Send /ideas and I'll ask you 3 questions.",
-  "",
-  "Everything else (history, banner, settings, help) is in the Menu button, bottom left.",
+  "Need a starting point? Use /ideas. All commands are in the Menu.",
 ].join("\n");
 
 const skipKeyboard: ReplyMarkup = { inline_keyboard: [[{ text: "Skip", callback_data: "ob:skip" }]] };
 
 const FIRST_POST_TIPS = [
-  "💡 Your first post is done! A few things you might like:",
+  "Also available:",
   "",
-  "• /ideas: no story in mind? I'll ask you 3 questions.",
-  "• /history: your last posts, ready to send again.",
-  "• /banner: a LinkedIn profile banner in your style.",
-  "• /settings: change your photo, name or job title.",
-  "",
-  "They're all in the Menu button, bottom left.",
+  "/ideas: prompts to find your next story",
+  "/history: your recent posts, ready to resend",
+  "/banner: a profile banner in your style",
+  "/settings: photo, name and job title",
 ].join("\n");
 
 const HELP = [
@@ -357,7 +346,7 @@ async function receivePhoto(ctx: Ctx, fileId: string) {
     const onboarding = ctx.session.data.onboarding;
     await updateProfile(ctx, { photoFileId: fileId });
     await resetSession(ctx);
-    await sendMessage(ctx.chatId, "Looking good 📸 Your photo will be on your carousels and quote cards.");
+    await sendMessage(ctx.chatId, "Photo saved. It will appear on your carousels and quote cards.");
     if (onboarding) await finishOnboarding(ctx);
     else await showSettings(ctx);
     return;
