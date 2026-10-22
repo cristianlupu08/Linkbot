@@ -38,6 +38,9 @@ await api("setMyCommands", {
   // Add more commands here as they get built (/new, /settings, /history, ...).
   commands: [
     { command: "new", description: "Start a new post" },
+    { command: "ideas", description: "No story in mind? I will ask you 3 questions" },
+    { command: "history", description: "Your last posts, ready to send again" },
+    { command: "banner", description: "A LinkedIn profile banner in your style" },
     { command: "settings", description: "Your photo, name and job title for the visuals" },
     { command: "help", description: "How it works + tips for a good voice note" },
     { command: "start", description: "Welcome" },

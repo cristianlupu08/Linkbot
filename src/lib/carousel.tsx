@@ -156,18 +156,39 @@ function Title({ text, size, theme }: { text: string; size: number; theme: Theme
   );
 }
 
+// Shows how far into the carousel you are; nicer than "3/8".
+function ProgressBar({ index, total, p }: { index: number; total: number; p: Palette }) {
+  const width = 180;
+  return (
+    <div style={{ display: "flex", width, height: 10, borderRadius: 5, backgroundColor: p.muted, opacity: 0.9 }}>
+      <div
+        style={{
+          display: "flex",
+          width: Math.round((width * (index + 1)) / total),
+          height: 10,
+          borderRadius: 5,
+          backgroundColor: p.accent === p.bg ? p.text : p.accent,
+        }}
+      />
+    </div>
+  );
+}
+
 type SlideProps = {
   slide: Slide;
   index: number;
   total: number;
   profile: Profile;
   theme: Theme;
+  // Tips carousels get a huge number on each tip slide.
+  numbered: boolean;
 };
 
-function SlideView({ slide, index, total, profile, theme }: SlideProps) {
+function SlideView({ slide, index, total, profile, theme, numbered }: SlideProps) {
   const p = theme.palettes[index % theme.palettes.length];
   const isCover = index === 0;
   const isLast = index === total - 1;
+  const bigNumber = numbered && !isCover && !isLast;
   // With a photo, the cover and the closing slide show the person big: people follow people.
   const showBigAuthor = isLast && Boolean(profile.photo);
 
@@ -188,7 +209,7 @@ function SlideView({ slide, index, total, profile, theme }: SlideProps) {
       <div style={{ display: "flex", alignItems: "center" }}>
         {isCover && profile.photo ? (
           <Avatar profile={profile} size={200} p={p} />
-        ) : isCover || isLast ? (
+        ) : isCover || isLast || bigNumber ? (
           <div style={{ width: 120, height: 14, backgroundColor: p.accent, borderRadius: 7 }} />
         ) : (
           <div
@@ -209,6 +230,21 @@ function SlideView({ slide, index, total, profile, theme }: SlideProps) {
 
       {/* Middle: the words */}
       <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, justifyContent: "center" }}>
+        {bigNumber ? (
+          <div
+            style={{
+              display: "flex",
+              fontSize: 220,
+              fontWeight: 800,
+              lineHeight: 1,
+              letterSpacing: -8,
+              color: p.accent,
+              marginBottom: 36,
+            }}
+          >
+            {String(index).padStart(2, "0")}
+          </div>
+        ) : null}
         <Title text={slide.title} size={titleSize(slide.title, isCover)} theme={theme} />
         {slide.body ? (
           <div
@@ -234,10 +270,8 @@ function SlideView({ slide, index, total, profile, theme }: SlideProps) {
       {/* Bottom: author, page number, swipe arrow */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", color: p.muted }}>
         {showBigAuthor ? <div style={{ display: "flex" }} /> : <AuthorLine profile={profile} p={p} size="small" />}
-        <div style={{ display: "flex", alignItems: "center", gap: 22, fontSize: 30 }}>
-          <div style={{ display: "flex" }}>
-            {index + 1}/{total}
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 26, fontSize: 30 }}>
+          <ProgressBar index={index} total={total} p={p} />
           {!isLast ? (
             <div
               style={{
@@ -271,9 +305,22 @@ async function toPng(element: React.ReactElement): Promise<Buffer> {
   return Buffer.from(await image.arrayBuffer());
 }
 
-export function renderSlidePng(slides: Slide[], index: number, style: CarouselStyle, profile: Profile) {
+export function renderSlidePng(
+  slides: Slide[],
+  index: number,
+  style: CarouselStyle,
+  profile: Profile,
+  numbered = false,
+) {
   return toPng(
-    <SlideView slide={slides[index]} index={index} total={slides.length} profile={profile} theme={THEMES[style]} />,
+    <SlideView
+      slide={slides[index]}
+      index={index}
+      total={slides.length}
+      profile={profile}
+      theme={THEMES[style]}
+      numbered={numbered}
+    />,
   );
 }
 
@@ -283,8 +330,9 @@ export async function buildCarousel(
   style: CarouselStyle,
   profile: Profile,
   title: string,
+  numbered = false,
 ): Promise<{ pdf: Uint8Array; cover: Buffer }> {
-  const pngs = await Promise.all(slides.map((_, i) => renderSlidePng(slides, i, style, profile)));
+  const pngs = await Promise.all(slides.map((_, i) => renderSlidePng(slides, i, style, profile, numbered)));
 
   const pdf = await PDFDocument.create();
   pdf.setTitle(title);
@@ -331,4 +379,71 @@ function QuoteView({ quote, profile, theme }: { quote: string; profile: Profile;
 
 export function renderQuoteCard(quote: string, style: CarouselStyle, profile: Profile) {
   return toPng(<QuoteView quote={quote} profile={profile} theme={THEMES[style]} />);
+}
+
+// ---------- LinkedIn profile banner (1584 × 396) ----------
+
+export const BANNER_WIDTH = 1584;
+export const BANNER_HEIGHT = 396;
+
+function bannerSize(text: string) {
+  const n = text.length;
+  return n <= 30 ? 76 : n <= 55 ? 64 : n <= 80 ? 54 : 46;
+}
+
+function BannerView({ tagline, profile, theme }: { tagline: string; profile: Profile; theme: Theme }) {
+  const p = theme.palettes[0];
+  const size = bannerSize(tagline);
+  return (
+    <div
+      style={{
+        width: BANNER_WIDTH,
+        height: BANNER_HEIGHT,
+        display: "flex",
+        backgroundColor: p.bg,
+        color: p.text,
+        fontFamily: "Inter",
+        position: "relative",
+      }}
+    >
+      {/* Decoration in the corners; the bottom-left stays clear because the profile photo covers it. */}
+      <div style={{ position: "absolute", right: 0, top: 0, width: 28, height: BANNER_HEIGHT, backgroundColor: p.accent }} />
+      <div style={{ position: "absolute", left: 80, top: 70, width: 120, height: 12, borderRadius: 6, backgroundColor: p.accent }} />
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          marginLeft: 560,
+          marginRight: 140,
+          flexGrow: 1,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            fontFamily: theme.titleFont,
+            fontWeight: theme.titleWeight,
+            fontSize: size,
+            lineHeight: 1.1,
+            letterSpacing: theme.titleFont === "Serif" ? -0.5 : -size * 0.02,
+          }}
+        >
+          {tagline}
+        </div>
+        <div style={{ display: "flex", marginTop: 26, fontSize: 26, color: p.muted }}>
+          {[profile.name, profile.headline].filter(Boolean).join("  ·  ")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export async function renderBanner(tagline: string, style: CarouselStyle, profile: Profile): Promise<Buffer> {
+  const image = new ImageResponse(<BannerView tagline={tagline} profile={profile} theme={THEMES[style]} />, {
+    width: BANNER_WIDTH,
+    height: BANNER_HEIGHT,
+    fonts: await loadFonts(),
+  });
+  return Buffer.from(await image.arrayBuffer());
 }

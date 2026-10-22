@@ -56,6 +56,7 @@ export type Step =
   | "awaiting_photo"
   | "awaiting_name"
   | "awaiting_headline"
+  | "awaiting_banner"
   // After the final post: free text is an edit instruction.
   | "adjusting";
 
@@ -77,6 +78,8 @@ export type SessionData = {
   pendingPhotoId?: string;
   // How many alternative hooks we've already tried with [Other hook].
   hookTries?: number;
+  // Banner lines we suggested, so a button can pick one.
+  bannerOptions?: string[];
 };
 
 export type Session = { step: Step; data: SessionData };
@@ -133,6 +136,11 @@ export type PostMeta = {
   quote?: string;
   imagePrompt?: string;
   firstComment?: string;
+  // The visual as Telegram stored it, so /history and reminders can resend it without rebuilding.
+  visual?: { kind: "photo" | "document"; fileId: string };
+  // "2026-10-23": send the post back that morning. remindedAt is set once it's sent.
+  remindOn?: string;
+  remindedAt?: string;
   slides?: { title: string; body?: string }[];
   score?: number;
   tips?: string[];
@@ -149,6 +157,7 @@ export type Post = {
   meta: PostMeta;
   final_text: string | null;
   cost_usd: number;
+  updated_at: string;
 };
 
 export async function createPost(
@@ -181,4 +190,28 @@ export async function updatePost(id: string, fields: Partial<Omit<Post, "id" | "
 export async function addPostCost(id: string, usd: number) {
   const post = await getPost(id);
   if (post) await updatePost(id, { cost_usd: Number(post.cost_usd) + usd });
+}
+
+export async function listDonePosts(telegramId: number, limit = 5): Promise<Post[]> {
+  return check(
+    await db()
+      .from("posts")
+      .select("*")
+      .eq("telegram_id", telegramId)
+      .eq("status", "done")
+      .order("updated_at", { ascending: false })
+      .limit(limit),
+  ) as Post[];
+}
+
+// Finished posts whose reminder day has come and that haven't been sent yet.
+export async function postsDueForReminder(today: string): Promise<Post[]> {
+  return check(
+    await db()
+      .from("posts")
+      .select("*")
+      .eq("status", "done")
+      .lte("meta->>remindOn", today)
+      .is("meta->>remindedAt", null),
+  ) as Post[];
 }

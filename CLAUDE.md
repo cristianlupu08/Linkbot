@@ -45,7 +45,7 @@ Un bot de Telegram. Utilizatorul îi trimite un **mesaj vocal** cu o poveste, ia
 
 - `/start`: bun venit
 - `/nou`: începe o postare nouă și anulează ce era în lucru
-- `/setari`: limbă (Română/Engleză/Ambele), număr de hashtag-uri (0/3/5), numele și titlul de pe copertă
+- `/settings`: poza, numele și titlul de pe vizuale (totul rămâne în engleză, fără opțiune de limbă)
 - `/stil`: utilizatorul trimite 2–3 postări vechi de-ale lui, iar botul îi învață stilul (vezi mai jos)
 - `/idei`: când nu știi ce să povestești, botul îți pune 3 întrebări care scot o poveste
 - `/istoric`: ultimele postări, cu buton să retrimită textul, PDF-ul și poza
@@ -102,7 +102,7 @@ Generată de AI pe baza poveștii, **fără text în imagine**, sau trimisă de 
 2. **Esențialul:** vocal → transcriere → [E corect]/[Corectez] → ecranul 1 de opțiuni → 3 variante cu ◀ ▶ → postarea finală.
 3. **Ce impresionează:** ecranele 2 și 3, rezumatul, hook-urile, caruselul PDF cu previzualizare, nota, numărul de caractere.
 4. **Lustruirea:** poza, butoanele de ajustare și instrucțiunile libere, /setari, /istoric, „costul”, avertismentul pentru link-uri, „Ca data trecută”.
-5. **Bonus:** /stil, /idei, /ciorne, ambele limbi, statistica de costuri.
+5. **Bonus:** /stil, /idei, /ciorne, statistica de costuri.
 
 ## Unde am rămas
 
@@ -117,4 +117,6 @@ Generată de AI pe baza poveștii, **fără text în imagine**, sau trimisă de 
 - **Decizii față de brief:** LinkedIn nu permite PDF și poză pe aceeași postare, deci ecranul 2 are rândul „Visual” [5 slides][8 slides][Image][None] în loc de „Slide-uri” + rândul „Poză” de pe ecranul 3. „Trimit eu poza” a fost scos (o pui direct pe LinkedIn). Ecranul 3 are doar Emoji și Ending.
 - **22.10.2026, îmbunătățiri după analiza exemplelor de pe LinkedIn (live, testate automat):** /settings cu poză, nume și titlu (poza apare pe copertă, în subsol și pe ultimul slide); format nou „Quote card” (Visual: Carousel / Quote card / Image / None, plus rând separat pentru numărul de slide-uri); utilizatorii care revin sar direct la rezumat; mesaje de progres; primul comentariu gata scris; ajustări după final ([Shorter] [New ending] [Other hook] [Fewer emoji] [Done] sau instrucțiuni scrise). Coloana nouă `users.profile` trebuie adăugată în Supabase (vezi `supabase/schema.sql`).
 - **Idei rămase pe listă:** culoare de brand în /settings, slide cu cifră mare, titlu de document la PDF (acum e sugerat din hook).
-- **Următorul pas:** restul etapei 4 (/history, întrebarea „ce te-a costat?”), apoi etapa 5.
+- **22.10.2026, a doua rundă de îmbunătățiri (live, testate automat):** bară de progres pe slide-uri + cifre mari la structura „Tips”; /ideas (3 întrebări care scot o poveste); /history (ultimele 5 postări, retrimise prin file_id salvat în `posts.meta.visual`); [⏰ Remind me tomorrow morning] + cron zilnic la 06:00 UTC (`/api/cron/reminders`, protejat cu `CRON_SECRET`); /banner (banner de profil 1584×396 în 3 stiluri, cu 3 texte propuse).
+- **Decizie:** totul rămâne în engleză (fără opțiune de limbă română).
+- **Următorul pas:** întrebarea „ce te-a costat?”, apoi etapa 5 (/stil, /ciorne, statistica de costuri).

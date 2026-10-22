@@ -339,3 +339,75 @@ export async function revisePost(
   );
   return { text: data.post.trim(), costUsd };
 }
+
+// ---------- /ideas: questions that pull a story out ----------
+
+const IDEAS_SYSTEM = `You help someone find a story from their work life worth posting on LinkedIn. Ask exactly 3 questions that each pull out one concrete moment (a specific day, a conversation, a mistake, a win, a surprise).
+
+Rules:
+- Each question is short (under 20 words), specific and easy to answer out loud in a voice note.
+- Make the 3 questions different kinds: e.g. a mistake or failure, a person who changed their mind about something, a small win or surprise.
+- Avoid generic prompts like "What's your biggest achievement?". Ask about moments, not opinions.
+- If you know their job, tailor the questions to it. Don't repeat topics they've already posted about.
+- English, plain text, no emoji.`;
+
+export async function ideaQuestions(
+  headline: string | undefined,
+  recentTopics: string[],
+): Promise<{ questions: string[]; costUsd: number }> {
+  const context = [
+    headline ? `Their job: ${headline}` : "Their job: unknown",
+    recentTopics.length ? `Recent posts (avoid these topics):\n${recentTopics.map((t) => `- ${t}`).join("\n")}` : "",
+    `Random seed for variety: ${Math.random().toString(36).slice(2, 8)}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const { data, costUsd } = await askJson<{ questions: string[] }>(
+    IDEAS_SYSTEM,
+    context,
+    {
+      type: "object",
+      properties: { questions: stringArray },
+      required: ["questions"],
+      additionalProperties: false,
+    },
+    "low",
+  );
+  return { questions: data.questions.map((q) => q.trim()).filter(Boolean).slice(0, 3), costUsd };
+}
+
+// ---------- /banner: tagline suggestions ----------
+
+const TAGLINE_SYSTEM = `You write the one-line text for someone's LinkedIn profile banner. It says what they do and why it matters, in their own human voice.
+
+Rules:
+- Exactly 3 options, each under 60 characters. Different angles: one about what they build or do, one about who they help, one with a bit of personality.
+- No buzzwords ("passionate", "synergy", "results-driven", "ninja", "guru"), no em dashes, no emoji, no hashtags.
+- Use only what you know about them; don't invent achievements or employers.
+- English.`;
+
+export async function suggestTaglines(
+  name: string,
+  headline: string | undefined,
+  recentTopics: string[],
+): Promise<string[]> {
+  const context = [
+    `Name: ${name}`,
+    headline ? `Job title: ${headline}` : "Job title: unknown",
+    recentTopics.length ? `Things they've posted about:\n${recentTopics.map((t) => `- ${t}`).join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const { data } = await askJson<{ taglines: string[] }>(
+    TAGLINE_SYSTEM,
+    context,
+    {
+      type: "object",
+      properties: { taglines: stringArray },
+      required: ["taglines"],
+      additionalProperties: false,
+    },
+    "low",
+  );
+  return data.taglines.map((t) => t.trim()).filter(Boolean).slice(0, 3);
+}

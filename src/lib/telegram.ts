@@ -33,6 +33,7 @@ export type TgMessage = {
   audio?: TgAudioFile;
   // Same photo in several sizes, smallest first.
   photo?: { file_id: string; width: number; height: number }[];
+  document?: { file_id: string; file_name?: string };
   forward_origin?: unknown;
 };
 
@@ -127,6 +128,39 @@ export function sendPhoto(chatId: number, png: Uint8Array, caption?: string, rep
     caption: caption?.slice(0, 1024),
     reply_markup: replyMarkup,
   });
+}
+
+// Re-sends a file Telegram already has (e.g. a carousel from /history), by its file_id. No upload needed.
+export function resendFile(chatId: number, kind: "photo" | "document", fileId: string, caption?: string) {
+  return callApi<TgMessage>(kind === "photo" ? "sendPhoto" : "sendDocument", {
+    chat_id: chatId,
+    [kind]: fileId,
+    caption: caption?.slice(0, 1024),
+  });
+}
+
+// Several files as one album. Documents keep full quality (photos get compressed).
+export async function sendDocumentAlbum(
+  chatId: number,
+  files: { bytes: Uint8Array; fileName: string }[],
+  caption?: string,
+) {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append(
+    "media",
+    JSON.stringify(
+      files.map((file, i) => ({
+        type: "document",
+        media: `attach://file${i}`,
+        ...(i === files.length - 1 && caption ? { caption: caption.slice(0, 1024) } : {}),
+      })),
+    ),
+  );
+  files.forEach((file, i) => form.append(`file${i}`, new Blob([new Uint8Array(file.bytes)]), file.fileName));
+  const res = await fetch(`https://api.telegram.org/bot${config.botToken}/sendMediaGroup`, { method: "POST", body: form });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Telegram sendMediaGroup failed: ${data.description}`);
 }
 
 export function sendDocument(chatId: number, file: Uint8Array, fileName: string, caption?: string) {
