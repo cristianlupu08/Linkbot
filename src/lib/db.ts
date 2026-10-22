@@ -102,6 +102,8 @@ export type SessionData = {
   bannerOptions?: string[];
   // First-time setup after /start: job title, then photo.
   onboarding?: boolean;
+  // Set while a slow step runs (writing, creating images), so a second tap doesn't start it twice.
+  busyUntil?: number;
   // Past posts collected by /style before tapping Done.
   styleSamples?: string[];
   // The interview before writing: current question, how many asked, which were skipped.
@@ -185,6 +187,8 @@ export type PostMeta = {
   // Photos inside the carousel: the user's own (in post_photos), created from these prompts, or none.
   carouselPhotoMode?: "own" | "generate" | "none";
   carouselPhotoPrompts?: string[];
+  // Created carousel photos, kept in Storage so text edits reuse them instead of creating new ones.
+  carouselPhotoPaths?: string[];
   // The visual as Telegram stored it, so /history and reminders can resend it without rebuilding.
   visual?: { kind: "photo" | "document"; fileId: string };
   // "2026-10-23": send the post back that morning. remindedAt is set once it's sent.
@@ -329,4 +333,38 @@ export async function listPostPhotos(postId: string): Promise<string[]> {
 
 export async function clearPostPhotos(postId: string) {
   check(await db().from("post_photos").delete().eq("post_id", postId));
+}
+
+// ---------- Created photos (private Storage bucket) ----------
+
+const PHOTO_BUCKET = "carousel-photos";
+
+export async function savePhotoFile(path: string, png: Buffer) {
+  const { error } = await db().storage.from(PHOTO_BUCKET).upload(path, png, { contentType: "image/png", upsert: true });
+  if (error) throw new Error(`Supabase Storage: ${error.message}`);
+}
+
+export async function loadPhotoFile(path: string): Promise<Buffer> {
+  const { data, error } = await db().storage.from(PHOTO_BUCKET).download(path);
+  if (error || !data) throw new Error(`Supabase Storage: ${error?.message ?? "no data"}`);
+  return Buffer.from(await data.arrayBuffer());
+}
+
+// Takes the "busy" lock in one atomic update: succeeds only if no slow step is running for this user.
+// Two taps that arrive at the same moment can't both get it.
+export async function tryLockSession(telegramId: number, session: Session, untilMs: number): Promise<boolean> {
+  const now = String(Date.now());
+  const { data, error } = await db()
+    .from("sessions")
+    .update({ data: { ...session.data, busyUntil: untilMs }, updated_at: new Date().toISOString() })
+    .eq("telegram_id", telegramId)
+    .or(`data->>busyUntil.is.null,data->>busyUntil.lt.${now}`)
+    .select("telegram_id");
+  if (error) throw new Error(`Supabase: ${error.message}`);
+  if ((data?.length ?? 0) > 0) return true;
+  // No session row yet means nothing can be running: create it with the lock.
+  const existing = check(await db().from("sessions").select("telegram_id").eq("telegram_id", telegramId));
+  if ((existing as unknown[]).length > 0) return false;
+  await saveSession(telegramId, { ...session, data: { ...session.data, busyUntil: untilMs } });
+  return true;
 }

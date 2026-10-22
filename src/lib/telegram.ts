@@ -33,7 +33,7 @@ export type TgMessage = {
   audio?: TgAudioFile;
   // Same photo in several sizes, smallest first.
   photo?: { file_id: string; width: number; height: number }[];
-  document?: { file_id: string; file_name?: string };
+  document?: { file_id: string; file_name?: string; mime_type?: string };
   forward_origin?: unknown;
 };
 

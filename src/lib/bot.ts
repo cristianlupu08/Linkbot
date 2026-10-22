@@ -37,6 +37,9 @@ import {
   addPostPhoto,
   clearPostPhotos,
   listPostPhotos,
+  loadPhotoFile,
+  savePhotoFile,
+  tryLockSession,
   markUpdateProcessed,
   saveSession,
   updatePost,
@@ -297,8 +300,11 @@ async function handleMessage(message: TgMessage, user: TgUser) {
     return;
   }
 
-  if (message.photo?.length) {
-    await receivePhoto(ctx, message.photo[message.photo.length - 1].file_id);
+  // Photos, including images sent "as a file" (uncompressed).
+  const imageDocument = message.document?.mime_type?.startsWith("image/") ? message.document.file_id : undefined;
+  const photoId = message.photo?.length ? message.photo[message.photo.length - 1].file_id : imageDocument;
+  if (photoId) {
+    await receivePhoto(ctx, photoId);
     return;
   }
 
@@ -422,6 +428,15 @@ async function receivePhoto(ctx: Ctx, fileId: string) {
     await applyOwnImage(ctx, fileId);
     return;
   }
+  // Sent while choosing the visual (before tapping Image): clearly meant for the post.
+  if (ctx.session.step === "idle" && ctx.session.data.chosenText && ctx.session.data.postId) {
+    const post = await getPost(ctx.session.data.postId);
+    if (post?.status === "draft") {
+      await setVisual(ctx, post, "Image");
+      await applyOwnImage(ctx, fileId);
+      return;
+    }
+  }
   if (ctx.session.step === "awaiting_carousel_photos") {
     await addCarouselPhoto(ctx, fileId);
     return;
@@ -477,7 +492,7 @@ async function visualProfile(ctx: Ctx): Promise<Profile> {
   if (profile.photoFileId) {
     try {
       const bytes = await downloadFile(profile.photoFileId);
-      photo = `data:image/jpeg;base64,${Buffer.from(bytes).toString("base64")}`;
+      photo = dataUri(Buffer.from(bytes));
     } catch (error) {
       console.error("profile photo download failed", error);
     }
@@ -796,7 +811,14 @@ export async function sendSavedPost(chatId: number, post: Post, intro: string) {
 }
 
 type Visual =
-  | { kind: "carousel"; pdf: Uint8Array; cover: Buffer; slides: { title: string; body?: string }[]; costUsd: number }
+  | {
+      kind: "carousel";
+      pdf: Uint8Array;
+      cover: Buffer;
+      slides: { title: string; body?: string }[];
+      photoPaths?: string[];
+      costUsd: number;
+    }
   | { kind: "quote"; png: Buffer; costUsd: number }
   | { kind: "image"; png: Buffer; costUsd: number }
   // The user's own photo: already on Telegram, resent by file_id.
@@ -841,7 +863,7 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
       ...post.meta,
       score: review.score,
       firstComment: review.firstComment,
-      ...(visual?.kind === "carousel" ? { slides: visual.slides } : {}),
+      ...(visual?.kind === "carousel" ? { slides: visual.slides, carouselPhotoPaths: visual.photoPaths } : {}),
     };
     await updatePost(post.id, { final_text: text, status: "done", meta });
     await addPostCost(post.id, review.costUsd + (visual?.costUsd ?? 0));
@@ -911,7 +933,7 @@ async function makeVisual(
       options.structure === "Tips",
       photos.dataUris,
     );
-    return { kind: "carousel", pdf, cover, slides, costUsd: costUsd + photos.costUsd };
+    return { kind: "carousel", pdf, cover, slides, photoPaths: photos.paths, costUsd: costUsd + photos.costUsd };
   }
   if (options.visual === "Quote card") {
     const quote = post.meta.quote ?? hook;
@@ -1209,8 +1231,9 @@ async function sendVisual(ctx: Ctx, post: Post, visual: Visual, hook: string): P
   }
   if (visual.kind === "quote") return largestPhoto(await sendPhoto(ctx.chatId, visual.png, QUOTE_CAPTION));
   if (visual.kind === "own") {
-    await resendFile(ctx.chatId, "photo", visual.fileId, "Your photo. Attach it to the post.");
-    return { kind: "photo", fileId: visual.fileId };
+    // Re-upload rather than resend by id: an image sent "as a file" can't be resent as a photo.
+    const bytes = Buffer.from(await downloadFile(visual.fileId));
+    return largestPhoto(await sendPhoto(ctx.chatId, bytes, "Your photo. Attach it to the post."));
   }
   return largestPhoto(await sendPhoto(ctx.chatId, visual.png, IMAGE_CAPTION, anotherImageKeyboard(post.id)));
 }
@@ -1232,7 +1255,8 @@ async function replaceVisual(ctx: Ctx, post: Post, text: string) {
     await editMessage(ctx.chatId, panelId, visual ? "New visual below." : "No visual for this post.");
     await sendFeedPreview(ctx, { ...post, meta: { ...post.meta, visual: undefined } }, text, visual, hook);
     const saved = visual ? await sendVisual(ctx, post, visual, hook) : undefined;
-    await updatePost(post.id, { meta: { ...post.meta, visual: saved } });
+    const photoPaths = visual?.kind === "carousel" ? { carouselPhotoPaths: visual.photoPaths } : {};
+    await updatePost(post.id, { meta: { ...post.meta, ...photoPaths, visual: saved } });
     if (visual) await addPostCost(post.id, visual.costUsd);
 
     const panel = await sendMessage(ctx.chatId, ADJUST_TEXT, adjustKeyboard);
@@ -1286,7 +1310,7 @@ async function carouselPhotoButton(ctx: Ctx, post: Post, data: string) {
   if (data === "cp:menu") {
     await showCarouselPhotoMenu(ctx);
   } else if (data === "cp:none") {
-    const meta = { ...post.meta, carouselPhotoMode: "none" as const, carouselPhotoPrompts: undefined };
+    const meta = { ...post.meta, carouselPhotoMode: "none" as const, carouselPhotoPrompts: undefined, carouselPhotoPaths: undefined };
     await updatePost(post.id, { meta });
     await proceedAfterVisual(ctx, { ...post, meta });
   } else if (data === "cp:own") {
@@ -1325,6 +1349,7 @@ async function carouselPhotoButton(ctx: Ctx, post: Post, data: string) {
       ...post.meta,
       carouselPhotoMode: "generate" as const,
       carouselPhotoPrompts: ctx.session.data.photoPlan.map((photo) => photo.prompt),
+      carouselPhotoPaths: undefined,
     };
     await updatePost(post.id, { meta });
     await proceedAfterVisual(ctx, { ...post, meta });
@@ -1426,7 +1451,7 @@ async function finishCarouselPhotos(ctx: Ctx) {
     await sendMessage(ctx.chatId, "Send at least one photo first, or go back and choose Text only.");
     return;
   }
-  const meta = { ...post.meta, carouselPhotoMode: "own" as const, carouselPhotoPrompts: undefined };
+  const meta = { ...post.meta, carouselPhotoMode: "own" as const, carouselPhotoPrompts: undefined, carouselPhotoPaths: undefined };
   await updatePost(post.id, { meta });
   const panel = await sendMessage(ctx.chatId, "Photos received.");
   ctx.session.step = ctx.session.data.changingVisual ? "adjusting" : "idle";
@@ -1435,17 +1460,39 @@ async function finishCarouselPhotos(ctx: Ctx) {
   await proceedAfterVisual(ctx, { ...post, meta });
 }
 
-// The carousel's photos as data: URIs: downloaded from Telegram, or created now (in parallel).
-async function carouselPhotos(post: Post): Promise<{ dataUris: string[]; costUsd: number }> {
+// A data: URI with the right type (PNG or JPEG), which the slide renderer needs.
+function dataUri(bytes: Buffer) {
+  const mime = bytes.readUInt32BE(0) === 0x89504e47 ? "image/png" : "image/jpeg";
+  return `data:${mime};base64,${bytes.toString("base64")}`;
+}
+
+// The carousel's photos as data: URIs: the user's own from Telegram, or created ones.
+// Created photos are made once and kept in Storage, so "Shorter" or "Different hook" reuse them.
+async function carouselPhotos(post: Post): Promise<{ dataUris: string[]; paths?: string[]; costUsd: number }> {
   if (post.meta.carouselPhotoMode === "own") {
     const fileIds = (await listPostPhotos(post.id)).slice(0, MAX_OWN_CAROUSEL_PHOTOS);
     const files = await Promise.all(fileIds.map((id) => downloadFile(id)));
-    return { dataUris: files.map((f) => `data:image/jpeg;base64,${Buffer.from(f).toString("base64")}`), costUsd: 0 };
+    return { dataUris: files.map((f) => dataUri(Buffer.from(f))), costUsd: 0 };
+  }
+  if (post.meta.carouselPhotoMode === "generate" && post.meta.carouselPhotoPaths?.length) {
+    try {
+      const files = await Promise.all(post.meta.carouselPhotoPaths.map((path) => loadPhotoFile(path)));
+      return { dataUris: files.map(dataUri), paths: post.meta.carouselPhotoPaths, costUsd: 0 };
+    } catch (error) {
+      console.error("stored photos missing, creating new ones", error);
+    }
   }
   if (post.meta.carouselPhotoMode === "generate" && post.meta.carouselPhotoPrompts?.length) {
     const images = await Promise.all(post.meta.carouselPhotoPrompts.map((prompt) => generateImage(prompt, "1536x1024")));
+    const stamp = Date.now();
+    const paths = images.map((_, i) => `${post.id}/${stamp}-${i}.png`);
+    // Keeping them is a bonus: if Storage fails, the carousel still goes out.
+    await Promise.all(images.map((img, i) => savePhotoFile(paths[i], img.png))).catch((error) => {
+      console.error("saving photos failed", error);
+    });
     return {
-      dataUris: images.map((img) => `data:image/png;base64,${img.png.toString("base64")}`),
+      dataUris: images.map((img) => dataUri(img.png)),
+      paths,
       costUsd: images.reduce((sum, img) => sum + img.costUsd, 0),
     };
   }
@@ -1932,6 +1979,7 @@ async function handleCallback(query: TgCallbackQuery) {
   // "Skip" during the first-time setup.
   if (data === "ob:skip") {
     await answerCallback(query.id);
+    if (!ctx.session.data.onboarding) return;
     // Cosmetic only: mark the question as skipped. Never let it block the setup.
     await editMessage(
       ctx.chatId,
@@ -1998,8 +2046,15 @@ async function handleCallback(query: TgCallbackQuery) {
     await answerCallback(query.id, "This session has ended. Send a new voice note to start again.");
     return;
   }
+  const lockUntil = Date.now() + 120_000;
+  if (!(await tryLockSession(ctx.user.id, ctx.session, lockUntil))) {
+    await answerCallback(query.id, "Still working on it…");
+    return;
+  }
   await answerCallback(query.id);
+  ctx.session.data.busyUntil = lockUntil;
 
+  try {
   if (data === "ok") {
     await followUpOrContinue(ctx, post);
   } else if (data === "fu:skip" && ctx.session.step === "awaiting_followup") {
@@ -2069,6 +2124,13 @@ async function handleCallback(query: TgCallbackQuery) {
       await generate(ctx, post);
     } else if (retry === "finish" && ctx.session.data.chosenText) {
       await finish(ctx, post, ctx.session.data.chosenText, ctx.session.step === "adjusting");
+    }
+  }
+  } finally {
+    // Clear the lock unless the step already replaced the session (which drops it anyway).
+    if (ctx.session.data.busyUntil) {
+      ctx.session.data.busyUntil = undefined;
+      await saveSession(ctx.user.id, ctx.session);
     }
   }
 }
