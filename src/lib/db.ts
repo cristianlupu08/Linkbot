@@ -71,6 +71,9 @@ export type Step =
   | "awaiting_style"
   // We asked one question about the story (e.g. "what did it cost you?").
   | "awaiting_followup"
+  // Choosing the visual: describing an image to generate, or sending your own photo.
+  | "awaiting_image_brief"
+  | "awaiting_user_image"
   // After the final post: free text is an edit instruction.
   | "adjusting";
 
@@ -104,6 +107,13 @@ export type SessionData = {
   skippedQuestions?: string[];
   // After the final post: a detail the editor asked for; the next text answers it.
   detailQuestion?: string;
+  // Choosing the visual after the text: the image brief so far, and whether we're replacing a visual.
+  imageBrief?: string;
+  imageQuestion?: string;
+  imageQuestionsAsked?: number;
+  imageSummary?: string;
+  imagePlan?: string;
+  changingVisual?: boolean;
 };
 
 export type Session = { step: Step; data: SessionData };
@@ -162,6 +172,8 @@ export type PostMeta = {
   firstComment?: string;
   // We only ask the follow-up question once per post.
   followUpAsked?: boolean;
+  // The user's own photo for the post (instead of a generated image).
+  userImageFileId?: string;
   // The visual as Telegram stored it, so /history and reminders can resend it without rebuilding.
   visual?: { kind: "photo" | "document"; fileId: string };
   // "2026-10-23": send the post back that morning. remindedAt is set once it's sent.

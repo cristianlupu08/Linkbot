@@ -2,6 +2,8 @@ import type { Button, ReplyMarkup } from "./telegram";
 
 // The option screens. Each question is one row of buttons; its name lives in the message text.
 // Codes are short because callback_data is limited to 64 bytes.
+// Screens 0 and 1 are about the text and come before writing. Screen 2 is about the visual
+// and comes after the user has picked a version, so they choose it knowing the post.
 export const QUESTIONS = [
   // Screen 1: the text
   {
@@ -37,56 +39,11 @@ export const QUESTIONS = [
       { code: "k", label: "Clients" },
     ],
   },
-  // Screen 2: the visual. LinkedIn allows a PDF or an image on a post, not both.
-  {
-    key: "visual",
-    code: "v",
-    screen: 1,
-    label: "Visual",
-    choices: [
-      { code: "c", label: "Carousel" },
-      { code: "q", label: "Quote card" },
-      { code: "i", label: "Image" },
-      { code: "n", label: "None" },
-    ],
-  },
-  {
-    key: "slides",
-    code: "k",
-    screen: 1,
-    label: "Number of slides",
-    choices: [
-      { code: "5", label: "5 slides" },
-      { code: "8", label: "8 slides" },
-    ],
-  },
-  {
-    key: "style",
-    code: "s",
-    screen: 1,
-    label: "Style",
-    choices: [
-      { code: "m", label: "Minimal" },
-      { code: "c", label: "Colorful" },
-      { code: "d", label: "Dark" },
-    ],
-  },
-  {
-    key: "structure",
-    code: "r",
-    screen: 1,
-    label: "Carousel structure",
-    choices: [
-      { code: "s", label: "Story" },
-      { code: "t", label: "Tips" },
-      { code: "b", label: "Before/After" },
-    ],
-  },
-  // Screen 3: finishing touches
+  // Screen 2: finishing touches
   {
     key: "emoji",
     code: "e",
-    screen: 2,
+    screen: 1,
     label: "Emoji",
     choices: [
       { code: "n", label: "None" },
@@ -97,7 +54,7 @@ export const QUESTIONS = [
   {
     key: "ending",
     code: "n",
-    screen: 2,
+    screen: 1,
     label: "Ending",
     choices: [
       { code: "q", label: "Question" },
@@ -105,10 +62,53 @@ export const QUESTIONS = [
       { code: "n", label: "None" },
     ],
   },
+  // Visual details, shown after a version is picked
+  {
+    key: "slides",
+    code: "k",
+    screen: 2,
+    label: "Number of slides",
+    choices: [
+      { code: "5", label: "5 slides" },
+      { code: "8", label: "8 slides" },
+    ],
+  },
+  {
+    key: "style",
+    code: "s",
+    screen: 2,
+    label: "Style",
+    choices: [
+      { code: "m", label: "Minimal" },
+      { code: "c", label: "Colorful" },
+      { code: "d", label: "Dark" },
+    ],
+  },
+  {
+    key: "structure",
+    code: "r",
+    screen: 2,
+    label: "Carousel structure",
+    choices: [
+      { code: "s", label: "Story" },
+      { code: "t", label: "Tips" },
+      { code: "b", label: "Before/After" },
+    ],
+  },
+] as const;
+
+// LinkedIn allows a PDF or an image on a post, not both. Picked from its own menu, not a row.
+export const VISUALS = [
+  { code: "c", label: "Carousel", button: "Carousel (PDF)" },
+  { code: "i", label: "Image", button: "Image" },
+  { code: "q", label: "Quote card", button: "Quote card" },
+  { code: "n", label: "None", button: "No visual" },
 ] as const;
 
 type Question = (typeof QUESTIONS)[number];
-export type PostOptions = { [Q in Question as Q["key"]]: Q["choices"][number]["label"] };
+export type PostOptions = { [Q in Question as Q["key"]]: Q["choices"][number]["label"] } & {
+  visual: (typeof VISUALS)[number]["label"];
+};
 
 export const DEFAULT_OPTIONS: PostOptions = {
   tone: "Serious",
@@ -122,8 +122,10 @@ export const DEFAULT_OPTIONS: PostOptions = {
   ending: "Question",
 };
 
-const SCREEN_TITLES = ["The text", "The visual", "Finishing touches"];
+const SCREEN_TITLES = ["The text", "Finishing touches"];
+// Screens before writing; the visual screen comes later.
 export const SCREEN_COUNT = SCREEN_TITLES.length;
+export const VISUAL_SCREEN = 2;
 
 export function isCarousel(options: PostOptions) {
   return options.visual === "Carousel";
@@ -166,16 +168,23 @@ export function applyOptionTap(
 }
 
 export function screenText(screen: number, options: PostOptions) {
-  const lines = [
+  if (screen === VISUAL_SCREEN) {
+    const title = isCarousel(options) ? "Carousel (PDF)" : "Quote card";
+    return [
+      title,
+      "",
+      ...screenQuestions(screen, options).map((q, i) => `${i + 1}. ${q.label}`),
+      "",
+      "Tap to change, then Create.",
+    ].join("\n");
+  }
+  return [
     `Step ${screen + 1}/${SCREEN_COUNT} · ${SCREEN_TITLES[screen]}`,
     "",
     ...screenQuestions(screen, options).map((q, i) => `${i + 1}. ${q.label}`),
-  ];
-  if (screen === 1) {
-    lines.push("", "Tip: a carousel (PDF) usually gets the most attention on LinkedIn. A quote card is quick and personal.");
-  }
-  lines.push("", "Tap to change.");
-  return lines.join("\n");
+    "",
+    "Tap to change.",
+  ].join("\n");
 }
 
 export function screenKeyboard(screen: number, options: PostOptions): ReplyMarkup {
@@ -185,6 +194,14 @@ export function screenKeyboard(screen: number, options: PostOptions): ReplyMarku
       callback_data: `o:${question.code}:${choice.code}`,
     })),
   );
+
+  if (screen === VISUAL_SCREEN) {
+    rows.push([
+      { text: "◀ Back", callback_data: "vis:menu" },
+      { text: "Create ▶", callback_data: "vis:go" },
+    ]);
+    return { inline_keyboard: rows };
+  }
 
   const nav: Button[] = [];
   if (screen > 0) nav.push({ text: "◀ Back", callback_data: `sc:${screen - 1}` });
@@ -197,12 +214,6 @@ export function screenKeyboard(screen: number, options: PostOptions): ReplyMarku
   return { inline_keyboard: rows };
 }
 
-export function describeVisual(options: PostOptions) {
-  if (isCarousel(options)) return `Carousel, ${options.slides} · ${options.style} · ${options.structure}`;
-  if (options.visual === "Quote card") return `Quote card · ${options.style}`;
-  return options.visual === "Image" ? "AI image" : "None";
-}
-
 export function summaryText(options: PostOptions, fromLastTime: boolean) {
   return [
     fromLastTime ? "Using your last settings:" : "Summary:",
@@ -210,9 +221,10 @@ export function summaryText(options: PostOptions, fromLastTime: boolean) {
     `Tone: ${options.tone}`,
     `Length: ${options.length}`,
     `For: ${options.audience}`,
-    `Visual: ${describeVisual(options)}`,
     `Emoji: ${options.emoji}`,
     `Ending: ${options.ending}`,
+    "",
+    "You'll choose the visual after picking a version.",
   ].join("\n");
 }
 
@@ -224,3 +236,16 @@ export const summaryKeyboard: ReplyMarkup = {
     ],
   ],
 };
+
+// The visual menu after a version is picked. The last choice gets a check mark.
+export function visualMenuKeyboard(options: PostOptions): ReplyMarkup {
+  const button = (v: (typeof VISUALS)[number]) => ({
+    text: options.visual === v.label ? `✓ ${v.button}` : v.button,
+    callback_data: `vis:${v.code}`,
+  });
+  return { inline_keyboard: [[button(VISUALS[0]), button(VISUALS[1])], [button(VISUALS[2]), button(VISUALS[3])]] };
+}
+
+export function visualFromCode(code: string) {
+  return VISUALS.find((v) => v.code === code)?.label;
+}

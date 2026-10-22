@@ -111,7 +111,7 @@ Write three versions:
 Also write:
 - hooks: 5 alternative first lines for the post. Ideally under 8 words. Curiosity, or the opposite of what you'd expect. Each must be true to the story.
 - quote: the single most quotable line of the story for a quote card, under 20 words. Ideally the person's own words, lightly tightened. No hashtags, no emoji.
-- imagePrompt: a description for an AI image to go with the post. A single striking scene or metaphor from the story, described visually (setting, light, mood, composition), photographic or editorial-illustration style. Don't show the storyteller's face or make them a specific person (the image must not misrepresent who they are): focus on the setting, objects, hands, or a figure seen from behind or far away. The image must contain no text, letters, numbers, logos, or readable screens.`;
+- imagePrompt: a description for an image to go with the post. A single believable scene from the story, described visually (setting, light, mood, composition), as a realistic candid photo. Don't show the storyteller's face or make them a specific person (the image must not misrepresent who they are): focus on the setting, objects, hands, or a figure seen from behind or far away. The image must contain no text, letters, numbers, logos, or readable screens.`;
 
 const LENGTH_GUIDE: Record<PostOptions["length"], string> = {
   Short: "about 400-700 characters",
@@ -492,4 +492,33 @@ export async function nextInterviewQuestion(
     "low",
   );
   return { question: data.question.trim(), costUsd };
+}
+
+// ---------- Image brief: understand what the user wants before generating ----------
+
+const IMAGE_PLANNER_SYSTEM = `You help someone get the right image for their LinkedIn post. They describe what they want; you make sure you understand it before anything is generated.
+
+Return:
+- question: if something important about the image is unclear (the main subject, the setting, whether people appear and how, the mood or time of day), one short question about the most important unclear point, under 20 words. A first description of only a few words almost always leaves something important open, so ask. Once you understand enough to create it, an empty string. Don't ask about nice-to-haves, and never about something already answered. If the brief asks you to suggest an image yourself, don't ask anything.
+- summary: one or two plain sentences describing the image you would create, for the user to confirm. Use their words.
+- prompt: a detailed prompt for an image model: subject, setting, composition, light, mood, camera angle. Only what the user described or clearly implied; fill gaps with ordinary, believable choices that fit the post.
+
+The image must look like a real photograph, never like AI: a candid, ordinary, believable scene. Don't show the author's face unless they explicitly ask for a person who is them; prefer hands, objects, places, or people from behind. No text, letters, numbers, logos or readable screens. English.`;
+
+export async function planImage(
+  conversation: string,
+  post: string,
+): Promise<{ question: string; summary: string; prompt: string; costUsd: number }> {
+  const { data, costUsd } = await askJson<{ question: string; summary: string; prompt: string }>(
+    IMAGE_PLANNER_SYSTEM,
+    `The post:\n<post>\n${post}\n</post>\n\nWhat they've said about the image so far:\n<brief>\n${conversation}\n</brief>`,
+    {
+      type: "object",
+      properties: { question: { type: "string" }, summary: { type: "string" }, prompt: { type: "string" } },
+      required: ["question", "summary", "prompt"],
+      additionalProperties: false,
+    },
+    "low",
+  );
+  return { question: data.question.trim(), summary: data.summary.trim(), prompt: data.prompt.trim(), costUsd };
 }

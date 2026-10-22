@@ -6,11 +6,16 @@ let client: OpenAI | undefined;
 // Approximate OpenAI price per image at this size and quality, for the cost we store per post.
 const PRICE_PER_IMAGE = 0.05;
 
+// Appended to every prompt so images look like real photos, not like AI.
+const REALISM = `Style: an authentic, candid photograph that looks taken by a real person with a phone or a 35mm camera. Natural available light, true-to-life colors, realistic textures and small everyday imperfections, an ordinary real-world setting, slight grain, natural depth of field. Not a stock photo, not cinematic: no dramatic lighting, no glossy or plastic-looking skin, no oversaturated colors, no perfect symmetry, no fantasy or surreal elements, no illustration, painting or 3D-render look.
+
+Absolutely no text, letters, words, numbers, logos or watermarks anywhere in the image.`;
+
 export async function generateImage(prompt: string): Promise<{ png: Buffer; costUsd: number }> {
   client ??= new OpenAI();
   const result = await client.images.generate({
     model: "gpt-image-2",
-    prompt: `${prompt}\n\nAbsolutely no text, letters, words, numbers, logos or watermarks anywhere in the image.`,
+    prompt: `${prompt}\n\n${REALISM}`,
     // Portrait takes the most space in the LinkedIn feed.
     size: "1024x1536",
     quality: "medium",

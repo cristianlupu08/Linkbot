@@ -5,6 +5,7 @@ import {
   generateVariants,
   ideaQuestions,
   learnStyle,
+  planImage,
   revisePost,
   nextInterviewQuestion,
   polishPost,
@@ -41,6 +42,9 @@ import {
   screenKeyboard,
   screenText,
   SCREEN_COUNT,
+  VISUAL_SCREEN,
+  visualFromCode,
+  visualMenuKeyboard,
   summaryKeyboard,
   summaryText,
   type PostOptions,
@@ -126,8 +130,8 @@ const HELP = [
   "",
   "1. Send a voice note with a story from work, or use /new to type it.",
   "2. Confirm the transcript and answer a few quick questions about the story.",
-  "3. Choose tone and visual (carousel, quote card or image). Your choices are remembered.",
-  "4. Pick one of 3 versions, then the opening line.",
+  "3. Choose tone, length and ending. Your choices are remembered.",
+  "4. Pick one of 3 versions and the opening line, then the visual: carousel, your own photo, a generated image, or a quote card.",
   "5. Receive the post, a score, a suggested first comment and the visual. Request edits in plain words.",
   "",
   "Commands",
@@ -265,6 +269,11 @@ async function handleMessage(message: TgMessage, user: TgUser) {
     await answerFollowUpVoice(ctx, audio);
     return;
   }
+  if (audio && ctx.session.step === "awaiting_image_brief") {
+    const answer = await transcribeAnswer(ctx, audio);
+    if (answer) await addImageBrief(ctx, answer);
+    return;
+  }
   if (audio) {
     await startFromVoice(ctx, audio);
     return;
@@ -296,6 +305,12 @@ async function handleMessage(message: TgMessage, user: TgUser) {
       return;
     case "awaiting_followup":
       await answerFollowUp(ctx, text);
+      return;
+    case "awaiting_image_brief":
+      await addImageBrief(ctx, text);
+      return;
+    case "awaiting_user_image":
+      await sendMessage(ctx.chatId, "Send the photo as an image, or tap Back to choose another visual.");
       return;
     case "adjusting":
       await adjust(ctx, text, true);
@@ -379,6 +394,10 @@ async function showSettings(ctx: Ctx, messageId?: number) {
 }
 
 async function receivePhoto(ctx: Ctx, fileId: string) {
+  if (ctx.session.step === "awaiting_user_image") {
+    await applyOwnImage(ctx, fileId);
+    return;
+  }
   if (ctx.session.step === "awaiting_photo") {
     const onboarding = ctx.session.data.onboarding;
     await updateProfile(ctx, { photoFileId: fileId });
@@ -655,7 +674,7 @@ async function showHooks(ctx: Ctx, post: Post) {
   const variant = post.variants![ctx.session.data.variantIndex ?? 0];
   const hooks = post.meta.hooks ?? [];
   if (hooks.length === 0) {
-    await finish(ctx, post, variant.text);
+    await chooseVisual(ctx, post, variant.text);
     return;
   }
   const text = [
@@ -709,7 +728,10 @@ const adjustKeyboard: ReplyMarkup = {
       { text: "Different hook", callback_data: "a:hook" },
       { text: "Fewer emoji", callback_data: "a:emoji" },
     ],
-    [{ text: "Remind me tomorrow morning", callback_data: "a:remind" }],
+    [
+      { text: "Change visual", callback_data: "a:visual" },
+      { text: "Remind me tomorrow", callback_data: "a:remind" },
+    ],
     [{ text: "Done", callback_data: "a:done" }],
   ],
 };
@@ -748,13 +770,15 @@ export async function sendSavedPost(chatId: number, post: Post, intro: string) {
 type Visual =
   | { kind: "carousel"; pdf: Uint8Array; cover: Buffer; slides: { title: string; body?: string }[]; costUsd: number }
   | { kind: "quote"; png: Buffer; costUsd: number }
-  | { kind: "image"; png: Buffer; costUsd: number };
+  | { kind: "image"; png: Buffer; costUsd: number }
+  // The user's own photo: already on Telegram, resent by file_id.
+  | { kind: "own"; fileId: string; costUsd: number };
 
-function progressSteps(options: PostOptions, isAdjustment: boolean) {
+function progressSteps(options: PostOptions, isAdjustment: boolean, ownPhoto: boolean) {
   if (isCarousel(options)) {
     return ["Reviewing the post and writing slides…", "Designing slides…", "Building the PDF…"];
   }
-  if (options.visual === "Image" && !isAdjustment) {
+  if (options.visual === "Image" && !isAdjustment && !ownPhoto) {
     return ["Generating the image (about 30 seconds)…", "Still generating…", "Finishing…"];
   }
   return ["Reviewing the post…", "Almost done…"];
@@ -766,7 +790,12 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
   ctx.session.data.chosenText = text;
   await saveSession(ctx.user.id, ctx.session);
 
-  const stopProgress = startProgress(ctx.chatId, panelId, progressSteps(options, isAdjustment), 8000);
+  const stopProgress = startProgress(
+    ctx.chatId,
+    panelId,
+    progressSteps(options, isAdjustment, Boolean(post.meta.userImageFileId)),
+    8000,
+  );
   try {
     const hooks = post.meta.hooks ?? [];
     const hook = hooks.includes(firstLine(text)) ? firstLine(text) : (hooks[0] ?? firstLine(text));
@@ -797,19 +826,8 @@ async function finish(ctx: Ctx, post: Post, text: string, isAdjustment = false) 
     await sendMessage(ctx.chatId, statsText(text, review.score, review.question));
     await sendMessage(ctx.chatId, review.firstComment);
 
-    // Keep Telegram's file_id of the visual so /history and reminders can resend it for free.
-    let saved: PostMeta["visual"];
-    if (visual?.kind === "carousel") {
-      await sendPhoto(ctx.chatId, visual.cover, "Cover preview. The full carousel is the PDF below.");
-      const sent = await sendDocument(ctx.chatId, visual.pdf, "carousel.pdf", carouselCaption(hook));
-      if (sent.document) saved = { kind: "document", fileId: sent.document.file_id };
-    } else if (visual?.kind === "quote") {
-      const sent = await sendPhoto(ctx.chatId, visual.png, QUOTE_CAPTION);
-      saved = largestPhoto(sent);
-    } else if (visual?.kind === "image") {
-      const sent = await sendPhoto(ctx.chatId, visual.png, IMAGE_CAPTION, anotherImageKeyboard(post.id));
-      saved = largestPhoto(sent);
-    } else if (isAdjustment && options.visual === "Image") {
+    const saved = visual ? await sendVisual(ctx, post, visual, hook) : undefined;
+    if (!visual && isAdjustment && options.visual === "Image") {
       await sendMessage(ctx.chatId, "The image is unchanged.");
     }
     if (saved) await updatePost(post.id, { meta: { ...meta, visual: saved } });
@@ -868,6 +886,9 @@ async function makeVisual(
     return { kind: "quote", png, costUsd: 0 };
   }
   // The image doesn't depend on the exact wording, so text tweaks keep it.
+  if (options.visual === "Image" && post.meta.userImageFileId && !isAdjustment) {
+    return { kind: "own", fileId: post.meta.userImageFileId, costUsd: 0 };
+  }
   if (options.visual === "Image" && post.meta.imagePrompt && !isAdjustment) {
     const { png, costUsd } = await generateImage(post.meta.imagePrompt);
     return { kind: "image", png, costUsd };
@@ -890,6 +911,264 @@ async function anotherImage(ctx: Ctx, postId: string) {
   } catch (error) {
     console.error("another image failed", error);
     await sendMessage(ctx.chatId, "Image generation failed. Please try again.");
+  }
+}
+
+// ---------- Choosing the visual (after the version is picked) ----------
+
+const MAX_IMAGE_QUESTIONS = 2;
+
+async function chooseVisual(ctx: Ctx, post: Post, text: string) {
+  ctx.session.data.chosenText = text;
+  ctx.session.data.changingVisual = false;
+  await saveSession(ctx.user.id, ctx.session);
+  await showVisualMenu(ctx, post);
+}
+
+async function showVisualMenu(ctx: Ctx, post: Post) {
+  const text = [
+    "Now the visual. LinkedIn allows one per post.",
+    "",
+    "Carousel (PDF): swipeable slides, usually the most reach.",
+    "Image: your own photo, or one created from your description.",
+    "Quote card: the strongest line of your post, with your photo and name.",
+  ].join("\n");
+  await editMessage(ctx.chatId, ctx.session.data.panelMessageId!, text, visualMenuKeyboard(postOptions(post)));
+}
+
+async function setVisual(ctx: Ctx, post: Post, visual: PostOptions["visual"]): Promise<Post> {
+  const options = { ...postOptions(post), visual };
+  await updatePost(post.id, { options });
+  // Remember it, so the same visual is pre-selected next time.
+  await upsertUser(ctx.user.id, { first_name: ctx.user.first_name, prefs: options });
+  return { ...post, options };
+}
+
+async function showImageMenu(ctx: Ctx) {
+  ctx.session.step = ctx.session.data.changingVisual ? "adjusting" : "idle";
+  await saveSession(ctx.user.id, ctx.session);
+  await editMessage(
+    ctx.chatId,
+    ctx.session.data.panelMessageId!,
+    "Image\n\nUse your own photo, or describe the image you want and I'll create it.",
+    {
+      inline_keyboard: [
+        [
+          { text: "Upload my own", callback_data: "im:up" },
+          { text: "Create one", callback_data: "im:gen" },
+        ],
+        [{ text: "◀ Back", callback_data: "vis:menu" }],
+      ],
+    },
+  );
+}
+
+async function visualButton(ctx: Ctx, post: Post, data: string) {
+  const panelId = ctx.session.data.panelMessageId!;
+  if (data === "vis:menu") {
+    ctx.session.step = ctx.session.data.changingVisual ? "adjusting" : "idle";
+    await saveSession(ctx.user.id, ctx.session);
+    await showVisualMenu(ctx, post);
+  } else if (data === "vis:go") {
+    await proceedAfterVisual(ctx, post);
+  } else if (data.startsWith("vis:")) {
+    const visual = visualFromCode(data.slice(4));
+    if (!visual) return;
+    post = await setVisual(ctx, post, visual);
+    if (visual === "Carousel" || visual === "Quote card") await showScreen(ctx, post, VISUAL_SCREEN);
+    else if (visual === "Image") await showImageMenu(ctx);
+    else await proceedAfterVisual(ctx, post);
+  } else if (data === "im:up") {
+    ctx.session.step = "awaiting_user_image";
+    await saveSession(ctx.user.id, ctx.session);
+    await editMessage(ctx.chatId, panelId, "Send the photo you want to use with the post.", {
+      inline_keyboard: [[{ text: "◀ Back", callback_data: "vis:i" }]],
+    });
+  } else if (data === "im:gen") {
+    ctx.session.step = "awaiting_image_brief";
+    ctx.session.data = {
+      ...ctx.session.data,
+      imageBrief: "",
+      imageQuestion: undefined,
+      imageQuestionsAsked: 0,
+      imagePlan: undefined,
+      imageSummary: undefined,
+    };
+    await saveSession(ctx.user.id, ctx.session);
+    await editMessage(
+      ctx.chatId,
+      panelId,
+      "Describe the image: what's in it, where it is, the mood. A voice note works too.\n\nOr let me suggest one based on your post.",
+      {
+        inline_keyboard: [
+          [{ text: "Suggest one", callback_data: "im:sug" }],
+          [{ text: "◀ Back", callback_data: "vis:i" }],
+        ],
+      },
+    );
+  } else if (data === "im:sug") {
+    const idea = post.meta.imagePrompt ?? "an image that fits the post";
+    await planAndConfirm(ctx, post, `Suggest an image that fits the post. A starting idea: ${idea}`, false);
+  } else if (data === "im:noq" && ctx.session.data.imagePlan) {
+    await showImageConfirm(ctx);
+  } else if (data === "im:ok" && ctx.session.data.imagePlan) {
+    const meta = { ...post.meta, imagePrompt: ctx.session.data.imagePlan, userImageFileId: undefined };
+    await updatePost(post.id, { meta });
+    await proceedAfterVisual(ctx, { ...post, meta });
+  }
+}
+
+// One step of the image brief: the user's description, or their answer to our question.
+async function addImageBrief(ctx: Ctx, answer: string) {
+  const post = ctx.session.data.postId ? await getPost(ctx.session.data.postId) : null;
+  if (!post) return;
+  const question = ctx.session.data.imageQuestion;
+  const brief = [ctx.session.data.imageBrief, question ? `Q: ${question}\nA: ${answer}` : answer]
+    .filter(Boolean)
+    .join("\n\n");
+  ctx.session.data.imageBrief = brief;
+  // The answer pushed the panel up; continue in a fresh one at the bottom.
+  const panel = await sendMessage(ctx.chatId, "Got it. Thinking about the image…");
+  ctx.session.data.panelMessageId = panel.message_id;
+  await saveSession(ctx.user.id, ctx.session);
+  const canAsk = (ctx.session.data.imageQuestionsAsked ?? 0) < MAX_IMAGE_QUESTIONS;
+  await planAndConfirm(ctx, post, brief, canAsk);
+}
+
+async function planAndConfirm(ctx: Ctx, post: Post, brief: string, canAsk: boolean) {
+  const panelId = ctx.session.data.panelMessageId!;
+  await editMessage(ctx.chatId, panelId, "Thinking about the image…");
+  try {
+    const plan = await withTyping(ctx.chatId, () => planImage(brief, ctx.session.data.chosenText ?? post.final_text ?? ""));
+    await addPostCost(post.id, plan.costUsd);
+    ctx.session.data.imageBrief = brief;
+    ctx.session.data.imagePlan = plan.prompt;
+    ctx.session.data.imageSummary = plan.summary;
+    if (canAsk && plan.question) {
+      ctx.session.step = "awaiting_image_brief";
+      ctx.session.data.imageQuestion = plan.question;
+      ctx.session.data.imageQuestionsAsked = (ctx.session.data.imageQuestionsAsked ?? 0) + 1;
+      await saveSession(ctx.user.id, ctx.session);
+      await editMessage(ctx.chatId, panelId, `${plan.question}\n\nAnswer with a voice note or text.`, {
+        inline_keyboard: [[{ text: "Skip, show me the plan", callback_data: "im:noq" }]],
+      });
+      return;
+    }
+    await saveSession(ctx.user.id, ctx.session);
+    await showImageConfirm(ctx);
+  } catch (error) {
+    console.error("image planning failed", error);
+    await editMessage(ctx.chatId, panelId, ERROR_TEXT, {
+      inline_keyboard: [[{ text: "◀ Back", callback_data: "vis:i" }]],
+    });
+  }
+}
+
+async function showImageConfirm(ctx: Ctx) {
+  ctx.session.step = ctx.session.data.changingVisual ? "adjusting" : "idle";
+  ctx.session.data.imageQuestion = undefined;
+  await saveSession(ctx.user.id, ctx.session);
+  await editMessage(
+    ctx.chatId,
+    ctx.session.data.panelMessageId!,
+    `I'll create:\n\n${ctx.session.data.imageSummary ?? ""}\n\nA realistic photo, no text in the image.`,
+    {
+      inline_keyboard: [
+        [
+          { text: "Create image", callback_data: "im:ok" },
+          { text: "Change description", callback_data: "im:gen" },
+        ],
+      ],
+    },
+  );
+}
+
+// The user's own photo, sent while we wait for it.
+async function applyOwnImage(ctx: Ctx, fileId: string) {
+  const post = ctx.session.data.postId ? await getPost(ctx.session.data.postId) : null;
+  if (!post) return;
+  const meta = { ...post.meta, userImageFileId: fileId };
+  await updatePost(post.id, { meta });
+  const panel = await sendMessage(ctx.chatId, "Photo received.");
+  ctx.session.step = ctx.session.data.changingVisual ? "adjusting" : "idle";
+  ctx.session.data.panelMessageId = panel.message_id;
+  await saveSession(ctx.user.id, ctx.session);
+  await proceedAfterVisual(ctx, { ...post, meta });
+}
+
+async function transcribeAnswer(ctx: Ctx, audio: TgAudioFile): Promise<string | null> {
+  if (audio.duration > MAX_VOICE_SECONDS || (audio.file_size ?? 0) > MAX_FILE_BYTES) {
+    await sendMessage(ctx.chatId, "That's too long. Please keep it under 5 minutes.");
+    return null;
+  }
+  try {
+    const { text, costUsd } = await withTyping(ctx.chatId, () =>
+      transcribeVoice(audio.file_id, audio.duration, audio.file_name),
+    );
+    if (ctx.session.data.postId) await addPostCost(ctx.session.data.postId, costUsd);
+    if (!text) await sendMessage(ctx.chatId, "No speech detected. Please try again, or type it.");
+    return text || null;
+  } catch (error) {
+    console.error("transcription failed", error);
+    await sendMessage(ctx.chatId, "Couldn't transcribe that. Please type it instead.");
+    return null;
+  }
+}
+
+// After the visual is chosen: the first time we finish the whole post; from "Change visual" only the visual.
+async function proceedAfterVisual(ctx: Ctx, post: Post) {
+  const text = ctx.session.data.chosenText;
+  if (!text) return;
+  if (ctx.session.data.changingVisual) await replaceVisual(ctx, post, text);
+  else await finish(ctx, post, text);
+}
+
+// Sends a finished visual and returns its Telegram file_id so /history and reminders can resend it for free.
+async function sendVisual(ctx: Ctx, post: Post, visual: Visual, hook: string): Promise<PostMeta["visual"]> {
+  if (visual.kind === "carousel") {
+    await sendPhoto(ctx.chatId, visual.cover, "Cover preview. The full carousel is the PDF below.");
+    const sent = await sendDocument(ctx.chatId, visual.pdf, "carousel.pdf", carouselCaption(hook));
+    return sent.document ? { kind: "document", fileId: sent.document.file_id } : undefined;
+  }
+  if (visual.kind === "quote") return largestPhoto(await sendPhoto(ctx.chatId, visual.png, QUOTE_CAPTION));
+  if (visual.kind === "own") {
+    await resendFile(ctx.chatId, "photo", visual.fileId, "Your photo. Attach it to the post.");
+    return { kind: "photo", fileId: visual.fileId };
+  }
+  return largestPhoto(await sendPhoto(ctx.chatId, visual.png, IMAGE_CAPTION, anotherImageKeyboard(post.id)));
+}
+
+async function replaceVisual(ctx: Ctx, post: Post, text: string) {
+  const panelId = ctx.session.data.panelMessageId!;
+  const options = postOptions(post);
+  const stopProgress = startProgress(
+    ctx.chatId,
+    panelId,
+    progressSteps(options, false, Boolean(post.meta.userImageFileId)),
+    8000,
+  );
+  try {
+    const hooks = post.meta.hooks ?? [];
+    const hook = hooks.includes(firstLine(text)) ? firstLine(text) : (hooks[0] ?? firstLine(text));
+    const visual = await withTyping(ctx.chatId, () => makeVisual(ctx, post, options, text, hook, false));
+    await stopProgress();
+    await editMessage(ctx.chatId, panelId, visual ? "New visual below." : "No visual for this post.");
+    const saved = visual ? await sendVisual(ctx, post, visual, hook) : undefined;
+    await updatePost(post.id, { meta: { ...post.meta, visual: saved } });
+    if (visual) await addPostCost(post.id, visual.costUsd);
+
+    const panel = await sendMessage(ctx.chatId, ADJUST_TEXT, adjustKeyboard);
+    ctx.session = {
+      step: "adjusting",
+      data: { postId: post.id, panelMessageId: panel.message_id, chosenText: text, hookTries: ctx.session.data.hookTries },
+    };
+    await saveSession(ctx.user.id, ctx.session);
+  } catch (error) {
+    await stopProgress();
+    console.error("replace visual failed", error);
+    await editMessage(ctx.chatId, panelId, ERROR_TEXT, {
+      inline_keyboard: [[{ text: "◀ Back", callback_data: "vis:menu" }]],
+    });
   }
 }
 
@@ -1468,10 +1747,16 @@ async function handleCallback(query: TgCallbackQuery) {
   } else if (data.startsWith("h:") && post.variants) {
     const variant = post.variants[ctx.session.data.variantIndex ?? 0];
     const hook = data === "h:k" ? null : post.meta.hooks?.[Number(data.slice(2))];
-    await finish(ctx, post, hook ? applyHook(variant.text, hook) : variant.text);
+    await chooseVisual(ctx, post, hook ? applyHook(variant.text, hook) : variant.text);
+  } else if (data.startsWith("vis:") || data.startsWith("im:")) {
+    await visualButton(ctx, post, data);
   } else if (data.startsWith("a:") && ctx.session.step === "adjusting") {
     const action = data.slice(2);
-    if (action === "done") {
+    if (action === "visual") {
+      ctx.session.data.changingVisual = true;
+      await saveSession(ctx.user.id, ctx.session);
+      await showVisualMenu(ctx, post);
+    } else if (action === "done") {
       await editMessage(ctx.chatId, message.message_id, "Saved. Send a voice note whenever you have the next story.");
       await resetSession(ctx);
     } else if (action === "remind") {
